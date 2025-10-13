@@ -4,7 +4,7 @@ A macOS tweak that programmatically removes window corner radius to achieve clea
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-![Preview 3](./previewMerge.png)
+![Preview 3](./previewMerged.png)
 
 View more screenshots: [GALLERY.md](./GALLERY.md)
 
