@@ -189,7 +189,6 @@ static BOOL enumerateMethods(Class destination, Class source) {
     for (unsigned int i = 0; i < methodCount; i++) {
         Method method = methodList[i];
         SEL selector  = method_getName(method);
-        NSString *methodName = NSStringFromSelector(selector);
         
         // Don't do anything with the unconditional swizzle
         if (sel_isEqual(selector, @selector(_ZK_unconditionallySwizzle))) {
@@ -203,8 +202,7 @@ static BOOL enumerateMethods(Class destination, Class source) {
             const char *originalType = method_getTypeEncoding(originalMethod);
             const char *newType = method_getTypeEncoding(method);
             if (strcmp(originalType, newType) != 0) {
-                NSLog(@"ZKSwizzle: incompatible type encoding for %@. (expected %s, got %s)", methodName, originalType, newType);
-                // Incompatible type encoding
+                // Incompatible type encoding - silently fail (no logging to avoid console spam)
                 success = NO;
                 continue;
             }
@@ -214,7 +212,7 @@ static BOOL enumerateMethods(Class destination, Class source) {
             
             SEL destSel = destinationSelectorForSelector(selector, source);
             if (!class_addMethod(destination, destSel, method_getImplementation(method), method_getTypeEncoding(originalMethod))) {
-                NSLog(@"ZKSwizzle: failed to add method %@ onto class %@ with selector %@", NSStringFromSelector(selector), NSStringFromClass(source), NSStringFromSelector(destSel));
+                // Failed to add method - silently fail (no logging to avoid console spam)
                 success = NO;
                 continue;
             }

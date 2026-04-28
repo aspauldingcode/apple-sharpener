@@ -1,5 +1,6 @@
 # Build directory
 build/
+out/
 
 # macOS system files
 .DS_Store
@@ -26,5 +27,28 @@ xcuserdata/
 
 # Log files
 *.log
+zoom_app_dump.txt
+dock_layers_dump.txt
+safari_app_dump.txt
 
 Squircles_Support/
+
+# Local OOWM tree (not part of apple-sharpener release)
+oowm/
+
+# Local dumps
+Finder_window_dump.txt
+src/sharpener/Windows/window_classes.txt
+test_reader
+test_reader.m
+test_sandbox
+test_sandbox.m
+test_sandbox_read
+test_sandbox_read.m
+test_writer.swift
+
+# SwiftPM (ASConfigurator)
+src/gui/ASConfigurator/.build/
+
+# Built Configurator app bundle (rebuild via swift build)
+src/gui/ASConfigurator/*.app/

@@ -1,212 +1,202 @@
 #import "dock.h"
-#import "ZKSwizzle.h"
-#import <notify.h>
+#import "sharpener_log.h"
+#import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <notify.h>
 #import <objc/runtime.h>
 
-// Debug logging disabled by default; enable with APPLE_SHARPENER_DEBUG
-#ifdef APPLE_SHARPENER_DEBUG
-static void ASDebugLog(const char *fmt, ...) {
-    va_list args; va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
-    va_end(args);
-}
-#else
-#define ASDebugLog(...) do {} while (0)
-#endif
-
-/**
- * Dock sharpening implementation for apple-sharpener
- * Hooks into CALayer layoutSublayers to target DockCore.ModernFloorLayer
- */
-
-#pragma mark - Constants
-
-NSString * const kDockBundleIdentifier = @"com.apple.dock";
-const CGFloat kDockDefaultRadius = 16.0;
-const CGFloat kDockSquareRadius = 0.0;
-
-#pragma mark - Global State
+NSString *const kDockBundleIdentifier = @"com.apple.dock";
 
 static BOOL enableDockSharpener = YES;
 static NSInteger dockCustomRadius = 0;
-
-#pragma mark - Helper Functions
+static BOOL dockBordersEnabled = NO;
+static CGFloat dockBorderWidth = 1.0;
+/// ARGB string applied when borders are on (includes fallback color).
+static NSString *dockBorderHexPaint = nil;
 
 BOOL isDockProcess(void) {
-    NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
-    return [bundleId isEqualToString:kDockBundleIdentifier];
+  return [[[NSBundle mainBundle] bundleIdentifier]
+      isEqualToString:kDockBundleIdentifier];
 }
 
-static void DoDock(CALayer *layer) {
-    if (!layer || !enableDockSharpener) return;
-    
-    ASDebugLog("DoDock on %s, radius=%ld", [layer.className UTF8String], (long)dockCustomRadius);
-    
-    // Apply corner radius to the dock layer
-    CGFloat targetRadius = enableDockSharpener ? dockCustomRadius : kDockDefaultRadius;
-    layer.cornerRadius = targetRadius;
-    layer.masksToBounds = YES;
-    
-    // Also apply to sublayers that might need it
-    for (CALayer *sublayer in layer.sublayers) {
-        NSString *subClass = sublayer.className;
-        if ([subClass containsString:@"Dock"] ||
-            [subClass containsString:@"Floor"] ||
-            [subClass containsString:@"Background"] ||
-            [subClass containsString:@"Backdrop"] ||
-            [subClass containsString:@"Portal"] ||
-            [subClass containsString:@"SDF"]) {
-            ASDebugLog("Apply radius to sublayer: %s", [subClass UTF8String]);
-            sublayer.cornerRadius = targetRadius;
-            sublayer.masksToBounds = YES;
-            [sublayer setNeedsLayout];
-            [sublayer setNeedsDisplay];
-        }
-    }
+static BOOL isDockBarLayer(CALayer *layer) {
+  for (CALayer *p = layer.superlayer; p; p = p.superlayer) {
+    if ([[p className] containsString:@"ModernFloorLayer"])
+      return YES;
+  }
+  return NO;
 }
 
-#pragma mark - CALayer Hook
+static CGColorRef ASHexARGBToCGColor(NSString *hex) {
+  if (!hex.length)
+    return NULL;
+  NSString *s = hex;
+  if ([s hasPrefix:@"0x"] || [s hasPrefix:@"0X"])
+    s = [s substringFromIndex:2];
+  if (s.length != 8)
+    return NULL;
+  unsigned v = 0;
+  if (![[NSScanner scannerWithString:s] scanHexInt:&v])
+    return NULL;
+  CGFloat a = ((v >> 24) & 0xFF) / 255.0;
+  CGFloat r = ((v >> 16) & 0xFF) / 255.0;
+  CGFloat g = ((v >> 8) & 0xFF) / 255.0;
+  CGFloat b = (v & 0xFF) / 255.0;
+  return [NSColor colorWithDeviceRed:r green:g blue:b alpha:a].CGColor;
+}
 
-// Store original method implementation
+static void ASStyleDockBackdrop(CALayer *layer) {
+  layer.cornerRadius = dockCustomRadius;
+  layer.masksToBounds = YES;
+  if (dockBordersEnabled && dockBorderHexPaint.length) {
+    layer.borderWidth = dockBorderWidth;
+    layer.borderColor = ASHexARGBToCGColor(dockBorderHexPaint);
+  } else {
+    layer.borderWidth = 0;
+    layer.borderColor = NULL;
+  }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  [layer setNeedsDisplay];
+  [layer displayIfNeeded];
+  id c = layer.contents;
+  layer.contents = nil;
+  layer.contents = c;
+  [CATransaction commit];
+}
+
 static IMP __LayoutSublayers = NULL;
 
-// Optional WALayerKitWindow hook (root layer provider)
-static IMP __WALayerKitWindow_layer = NULL;
-static CALayer* _PatchedWALayerKitWindow_layer(id self, SEL _cmd) {
-    CALayer *root = ((CALayer*(*)(id,SEL))__WALayerKitWindow_layer)(self, _cmd);
-    ASDebugLog("WALayerKitWindow layer root: %p", root);
-    return root;
-}
-
-// Hooked layoutSublayers method
 static void _PatchedLayoutSublayers(id self, SEL _cmd) {
-    // Call original implementation first
-    if (__LayoutSublayers) {
-        ((void(*)(id, SEL))__LayoutSublayers)(self, _cmd);
-    }
-    
-    // Only process if we're in the dock and sharpening is enabled
-    if (!isDockProcess() || !enableDockSharpener) return;
-    
-    // Debug: Log all layer classes we encounter
-    NSString *className = [self className];
-    ASDebugLog("CALayer layout: %s", [className UTF8String]);
-    
-    // Check if this is the DockCore.ModernFloorLayer we're looking for
-    if ([className isEqualToString:@"DockCore.ModernFloorLayer"]) {
-        ASDebugLog("Found DockCore.ModernFloorLayer, applying radius=%ld", (long)dockCustomRadius);
-        DoDock((CALayer *)self);
-    }
-    // Also try broader detection for dock-related layers
-    else if ([className containsString:@"Dock"] || 
-             [className containsString:@"Floor"] ||
-             [className containsString:@"Background"] ||
-             [className containsString:@"Modern"] ||
-             [className containsString:@"Backdrop"] ||
-             [className containsString:@"Portal"] ||
-             [className containsString:@"SDF"]) {
-        ASDebugLog("Found potential dock layer: %s, applying radius=%ld", [className UTF8String], (long)dockCustomRadius);
-        DoDock((CALayer *)self);
-    }
+  if (__LayoutSublayers)
+    ((void (*)(id, SEL))__LayoutSublayers)(self, _cmd);
+  if (!isDockProcess() || !enableDockSharpener)
+    return;
+
+  CALayer *layer = (CALayer *)self;
+  NSString *cn = [layer className];
+  if ([cn containsString:@"Label"] || [cn containsString:@"TileLabel"] ||
+      [cn containsString:@"Text"] || [cn containsString:@"Icon"] ||
+      [cn containsString:@"Tile"] || [cn containsString:@"Item"] ||
+      [cn containsString:@"Trash"] || [cn containsString:@"Badge"] ||
+      [cn containsString:@"Indicator"])
+    return;
+  if (![cn isEqualToString:@"CASDFElementLayer"])
+    return;
+
+  for (CALayer *p = layer.superlayer; p; p = p.superlayer) {
+    NSString *pc = [p className];
+    if ([pc containsString:@"Label"] || [pc containsString:@"Tile"] ||
+        [pc containsString:@"Icon"] || [pc containsString:@"Item"] ||
+        [pc containsString:@"Trash"] || [pc containsString:@"Badge"] ||
+        [pc containsString:@"Indicator"])
+      return;
+  }
+  if (!isDockBarLayer(layer))
+    return;
+  ASStyleDockBackdrop(layer);
 }
 
-#pragma mark - Public API
+static void ASWalkDockLayersForRefresh(CALayer *root) {
+  NSMutableArray<CALayer *> *q = [NSMutableArray arrayWithObject:root];
+  while (q.count) {
+    CALayer *ly = q.firstObject;
+    [q removeObjectAtIndex:0];
+    [ly setNeedsLayout];
+    [ly layoutIfNeeded];
+    if ([[ly className] isEqualToString:@"CASDFElementLayer"] &&
+        isDockBarLayer(ly))
+      ASStyleDockBackdrop(ly);
+    for (CALayer *sl in ly.sublayers)
+      [q addObject:sl];
+  }
+}
 
 void toggleDockCorners(BOOL enable, NSInteger radius) {
-    if (!isDockProcess()) return;
-    
-    enableDockSharpener = enable;
-    dockCustomRadius = MAX(0, radius);
-    
-    // Force layout update on all layers to trigger our hook
-    NSArray *windows = [[NSApplication sharedApplication] windows];
-    for (NSWindow *window in windows) {
-        if (window.contentView && window.contentView.layer) {
-            [window.contentView.layer setNeedsLayout];
-        }
+  if (!isDockProcess())
+    return;
+  enableDockSharpener = enable;
+  dockCustomRadius = MAX(0, radius);
+  @try {
+    for (NSWindow *w in NSApplication.sharedApplication.windows) {
+      CALayer *root = w.contentView.layer;
+      if (!root)
+        continue;
+      ASWalkDockLayersForRefresh(root);
+      [w invalidateShadow];
+      [w displayIfNeeded];
     }
+  } @catch (__unused NSException *e) {
+  }
 }
 
-#pragma mark - Dock View Swizzling
+static void refreshDockSettings(void) {
+  NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
+  [std synchronize];
 
-// Remove old placeholder swizzling - we're using direct method hooking instead
+  id (^get)(NSString *, NSString *) = ^id(NSString *mod, NSString *fallback) {
+    id v = mod ? [std objectForKey:[NSString stringWithFormat:@"AppleSharpener_%@", mod]] : nil;
+    if (v && v != (id)[NSNull null])
+      return v;
+    v = fallback ? [std objectForKey:[NSString stringWithFormat:@"AppleSharpener_%@", fallback]]
+                 : nil;
+    return (v && v != (id)[NSNull null]) ? v : nil;
+  };
 
-#pragma mark - Notification Setup
+  id val;
+  if ((val = get(@"dock_enabled", @"enabled")))
+    enableDockSharpener = [val boolValue];
+  if ((val = get(@"dock_radius", @"radius")))
+    dockCustomRadius = [val integerValue];
 
-static void setupDockNotifications(void) __attribute__((constructor));
-static void setupDockNotifications(void) {
-    // Only setup if we're in the Dock process
-    if (!isDockProcess()) {
-        NSLog(@"[AppleSharpener] Not in Dock process (bundle ID: %@), skipping setup", [[NSBundle mainBundle] bundleIdentifier]);
-        return;
-    }
-    
-    NSLog(@"[AppleSharpener] Setting up dock notifications in process: %@", [[NSBundle mainBundle] bundleIdentifier]);
-    
-    // Load persisted settings from NSUserDefaults
-    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
-    enableDockSharpener = [defaults boolForKey:@"enabled"];
-    dockCustomRadius = [defaults integerForKey:@"dock_radius"];
-    
-    // Hook CALayer's layoutSublayers method
-    Class layerClass = [CALayer class];
-    Method originalMethod = class_getInstanceMethod(layerClass, @selector(layoutSublayers));
-    if (originalMethod) {
-        __LayoutSublayers = method_getImplementation(originalMethod);
-        method_setImplementation(originalMethod, (IMP)_PatchedLayoutSublayers);
-        ASDebugLog("Hooked CALayer layoutSublayers");
-    } else {
-        ASDebugLog("Failed to find CALayer layoutSublayers");
-    }
-    
-    // Optionally hook WALayerKitWindow - root layer provider for Dock windows
-    Class walClass = NSClassFromString(@"WALayerKitWindow");
-    if (walClass) {
-        Method walLayerMethod = class_getInstanceMethod(walClass, @selector(layer));
-        if (walLayerMethod) {
-            __WALayerKitWindow_layer = method_getImplementation(walLayerMethod);
-            method_setImplementation(walLayerMethod, (IMP)_PatchedWALayerKitWindow_layer);
-            ASDebugLog("Hooked WALayerKitWindow layer method");
-        } else {
-            ASDebugLog("WALayerKitWindow layer method not found");
-        }
-    } else {
-        ASDebugLog("WALayerKitWindow class not present");
-    }
-    
-    dispatch_queue_t queue = dispatch_get_main_queue();
-    
-    static const char *kNotifyEnabled = "com.aspauldingcode.apple_sharpener.enabled";
-    static const char *kNotifyDockRadius = "com.aspauldingcode.apple_sharpener.dock.set_radius";
-    
-    int tokenEnabled;
-    if (notify_register_dispatch(kNotifyEnabled, &tokenEnabled, dispatch_get_main_queue(), ^(int token) {
-        uint64_t state;
-        notify_get_state(token, &state);
-        enableDockSharpener = (state != 0);
-        [defaults setBool:enableDockSharpener forKey:@"enabled"];
-        [defaults synchronize];
-        toggleDockCorners(enableDockSharpener, dockCustomRadius);
-        ASDebugLog("Updated enabled=%d", enableDockSharpener);
-    }) != NOTIFY_STATUS_OK) {
-        ASDebugLog("Failed to register for enabled notification");
-    }
-    
-    int tokenRadius;
-    if (notify_register_dispatch(kNotifyDockRadius, &tokenRadius, dispatch_get_main_queue(), ^(int token) {
-        uint64_t state;
-        notify_get_state(token, &state);
-        dockCustomRadius = (NSInteger)state;
-        [defaults setInteger:dockCustomRadius forKey:@"dock_radius"];
-        [defaults synchronize];
-        toggleDockCorners(enableDockSharpener, dockCustomRadius);
-        ASDebugLog("Updated dock radius=%ld", (long)dockCustomRadius);
-    }) != NOTIFY_STATUS_OK) {
-        ASDebugLog("Failed to register for dock radius notification");
-    }
-    
-    // Initial application
-    toggleDockCorners(enableDockSharpener, dockCustomRadius);
+  if ((val = get(@"dock_borders", @"global_borders")))
+    dockBordersEnabled = [val boolValue];
+  if ((val = get(@"dock_border_width", @"global_border_width")))
+    dockBorderWidth = [val doubleValue];
+
+  NSString *hex = nil;
+  if ((val = get(@"dock_border_color_active", @"global_border_color_active")))
+    hex = [val isKindOfClass:[NSString class]] ? val : nil;
+  if (dockBordersEnabled && !hex.length)
+    hex = @"0xFF808080";
+  dockBorderHexPaint = hex.length ? hex : nil;
+}
+
+static void dockOnSettingsChanged(__unused int tok) {
+  refreshDockSettings();
+  toggleDockCorners(enableDockSharpener, dockCustomRadius);
+}
+
+void setupDockNotifications(void) {
+  if (!isDockProcess())
+    return;
+  SHARPENER_LOG(@"Dock hooks: %@", NSBundle.mainBundle.bundleIdentifier);
+
+  Method m = class_getInstanceMethod([CALayer class], @selector(layoutSublayers));
+  if (m) {
+    __LayoutSublayers = method_getImplementation(m);
+    method_setImplementation(m, (IMP)_PatchedLayoutSublayers);
+  }
+
+  const char *names[] = {
+      "com.aspauldingcode.apple_sharpener.dock.set_radius",
+      "com.aspauldingcode.apple_sharpener.modules.update",
+      "com.aspauldingcode.apple_sharpener.dock.enabled",
+  };
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+    int token = 0;
+    notify_register_dispatch(names[i], &token, dispatch_get_main_queue(),
+                             ^(int __unused t) { dockOnSettingsChanged(0); });
+  }
+
+  refreshDockSettings();
+  toggleDockCorners(enableDockSharpener, dockCustomRadius);
+
+  [NSDistributedNotificationCenter.defaultCenter
+      addObserverForName:@"com.aspauldingcode.apple_sharpener.modules.update"
+                  object:nil
+                   queue:NSOperationQueue.mainQueue
+              usingBlock:^(__unused NSNotification *n) {
+                dockOnSettingsChanged(0);
+              }];
 }

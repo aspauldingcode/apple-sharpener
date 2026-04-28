@@ -1,0 +1,50 @@
+{
+  "pins" : [
+    {
+      "identity" : "bigdecimal",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mgriebling/BigDecimal.git",
+      "state" : {
+        "revision" : "4414e0e82bb859cf5a2883f9401e7d7cb030f5b1",
+        "version" : "3.0.2"
+      }
+    },
+    {
+      "identity" : "bigint",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mgriebling/BigInt.git",
+      "state" : {
+        "revision" : "f4c0c41dd681b2c3d770b9a83cb5e0e3e30ee708",
+        "version" : "2.3.0"
+      }
+    },
+    {
+      "identity" : "kdl-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/danini-the-panini/kdl-swift.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "ab851f823aceefc90e59c6c450294c3abaaf8721"
+      }
+    },
+    {
+      "identity" : "swift-numerics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-numerics",
+      "state" : {
+        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "uint128",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mgriebling/UInt128.git",
+      "state" : {
+        "revision" : "f32052e906fd125936fef2d16e3ad284d50d68ed",
+        "version" : "3.2.0"
+      }
+    }
+  ],
+  "version" : 2
+}

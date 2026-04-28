@@ -1,176 +1,701 @@
 #import <Foundation/Foundation.h>
 #import <notify.h>
+#import "sharpener_cf_prefs.h"
 
 // Embed version at compile time; defaults to "dev" when not provided
 #ifndef APPLE_SHARPENER_VERSION
 #define APPLE_SHARPENER_VERSION "dev"
 #endif
 
-void printUsage() {
-    puts("Usage: sharpener [on|off|toggle] [options]\n"
-         "\nCommands:"
-         "\n  on, off, toggle        Control sharpening"
-         "\n\nOptions:"
-         "\n  -r, --radius <value>   Set sharpening radius"
-         "\n  -d, --dock-radius <value>  Set dock radius"
-         "\n  -s, --status           Show current radius and status"
-         "\n  -v, --version          Show version"
-         "\n  -h, --help             Show this help message\n");
+static void sharpener_cli_commit(void) {
+  NSUserDefaults *suite =
+      [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+  SharpenerMirrorSuiteDefaultsToCF(suite);
+  SharpenerPostModulesUpdateNotification();
 }
 
-int main(int argc, const char * argv[]) {
-    @autoreleasepool {
-        if (argc < 2) {
-            printUsage();
-            return 1;
-        }
-        
-        NSString *firstArg = [NSString stringWithUTF8String:argv[1]];
-        
-        if ([firstArg isEqualToString:@"--help"] || [firstArg isEqualToString:@"-h"]) {
-            printUsage();
-            return 0;
-        }
-        if ([firstArg isEqualToString:@"--version"] || [firstArg isEqualToString:@"-v"]) {
-            printf("Apple Sharpener version: %s\n", APPLE_SHARPENER_VERSION);
-            return 0;
-        }
-        
-        if ([firstArg isEqualToString:@"on"]) {
-            // Backward-compatible event
-            notify_post("com.aspauldingcode.apple_sharpener.enable");
-            // Persistent enabled state
-            int tokenEnabled = 0;
-            if (notify_register_check("com.aspauldingcode.apple_sharpener.enabled", &tokenEnabled) == NOTIFY_STATUS_OK) {
-                notify_set_state(tokenEnabled, 1);
-                notify_post("com.aspauldingcode.apple_sharpener.enabled");
-            }
-            NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
-            [defaults setBool:YES forKey:@"enabled"];
-            [defaults synchronize];
-            printf("Sharpener enabled\n");
-        } else if ([firstArg isEqualToString:@"off"]) {
-            // Backward-compatible event
-            notify_post("com.aspauldingcode.apple_sharpener.disable");
-            // Persistent enabled state
-            int tokenEnabled = 0;
-            if (notify_register_check("com.aspauldingcode.apple_sharpener.enabled", &tokenEnabled) == NOTIFY_STATUS_OK) {
-                notify_set_state(tokenEnabled, 0);
-                notify_post("com.aspauldingcode.apple_sharpener.enabled");
-            }
-            NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
-            [defaults setBool:NO forKey:@"enabled"];
-            [defaults synchronize];
-            printf("Sharpener disabled\n");
-        } else if ([firstArg isEqualToString:@"toggle"]) {
-            // Backward-compatible event
-            notify_post("com.aspauldingcode.apple_sharpener.toggle");
-            // Persistent enabled state toggle
-            int tokenEnabled = 0;
-            if (notify_register_check("com.aspauldingcode.apple_sharpener.enabled", &tokenEnabled) == NOTIFY_STATUS_OK) {
-                uint64_t state = 0;
-                notify_get_state(tokenEnabled, &state);
-                uint64_t newState = (state == 0) ? 1 : 0;
-                notify_set_state(tokenEnabled, newState);
-                notify_post("com.aspauldingcode.apple_sharpener.enabled");
-            }
-            NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
-            BOOL currentEnabled = [defaults boolForKey:@"enabled"];
-            [defaults setBool:!currentEnabled forKey:@"enabled"];
-            [defaults synchronize];
-            printf("Sharpener toggled\n");
-        } else if ([firstArg hasPrefix:@"--radius="] || ([firstArg isEqualToString:@"-r"] && argc > 2)) {
-            uint64_t radius = 0;
-            if ([firstArg hasPrefix:@"--radius="]) {
-                radius = strtoull([[firstArg substringFromIndex:9] UTF8String], NULL, 10);
-            } else {
-                radius = strtoull(argv[2], NULL, 10);
-            }
-            // Register for the set_radius notification to obtain a token.
-            int tokenSetRadius = 0;
-            if (notify_register_check("com.aspauldingcode.apple_sharpener.set_radius", &tokenSetRadius) == NOTIFY_STATUS_OK) {
-                // Set the state with the token and post the notification.
-                notify_set_state(tokenSetRadius, radius);
-                notify_post("com.aspauldingcode.apple_sharpener.set_radius");
-                NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
-                [defaults setInteger:radius forKey:@"radius"];
-                [defaults synchronize];
-                printf("Sharpener radius set to %llu\n", radius);
-            } else {
-                printf("Failed to register set_radius notification\n");
-                return 1;
-            }
-        } else if ([firstArg hasPrefix:@"--dock-radius="] || [firstArg hasPrefix:@"-d="] || ([firstArg isEqualToString:@"--dock-radius"] && argc > 2) || ([firstArg isEqualToString:@"-d"] && argc > 2)) {
-            uint64_t radius = 0;
-            if ([firstArg hasPrefix:@"--dock-radius="]) {
-                radius = strtoull([[firstArg substringFromIndex:14] UTF8String], NULL, 10);
-            } else if ([firstArg hasPrefix:@"-d="]) {
-                radius = strtoull([[firstArg substringFromIndex:3] UTF8String], NULL, 10);
-            } else {
-                radius = strtoull(argv[2], NULL, 10);
-            }
-            int tokenSetRadius = 0;
-            if (notify_register_check("com.aspauldingcode.apple_sharpener.dock.set_radius", &tokenSetRadius) == NOTIFY_STATUS_OK) {
-                notify_set_state(tokenSetRadius, radius);
-                notify_post("com.aspauldingcode.apple_sharpener.dock.set_radius");
-                NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
-                [defaults setInteger:radius forKey:@"dock_radius"];
-                [defaults synchronize];
-                printf("Dock radius set to %llu\n", radius);
-            } else {
-                printf("Failed to register dock set_radius notification\n");
-                return 1;
-            }
-        } else if ([firstArg isEqualToString:@"--status"] || [firstArg isEqualToString:@"-s"]) {
-            // Read the current radius from the shared state on the set_radius channel
-            int tokenShowRadius = 0;
-            uint64_t currentRadius = 0;
-            if (notify_register_check("com.aspauldingcode.apple_sharpener.set_radius", &tokenShowRadius) == NOTIFY_STATUS_OK) {
-                if (notify_get_state(tokenShowRadius, &currentRadius) != NOTIFY_STATUS_OK) {
-                    printf("Failed to read current radius\n");
-                    return 1;
-                }
-            } else {
-                printf("Failed to register set_radius notification for reading\n");
-                return 1;
-            }
+void printUsage() {
+  puts("Usage: sharpener [command] [options]\n"
+       "\nGlobal Commands:"
+       "\n  on, off, toggle              Control sharpening (both windows and "
+       "dock)"
+       "\n  -r, --radius <value>         Set global radius (affects windows "
+       "and dock)"
+       "\n\nWindows Commands:"
+       "\n  -w, --windows on|off|toggle  Control windows only"
+       "\n  -w, --windows <value>        Set windows-specific radius"
+       "\n\nDock Commands:"
+       "\n  -d, --dock on|off|toggle     Control dock only"
+       "\n  -d, --dock <value>           Set dock-specific radius (alias for "
+       "--dock-radius)"
+       "\n\nSquircle Commands:"
+       "\n  -q, --squircle on|off|toggle Control continuous corners (squircles)"
+       "\n  -e, --exponent <value>       Set squircle exponent (0-6, default: "
+       "4.0)"
+       "\n\nOther Options:"
+       "\n  -s, --status                 Show current radius and status"
+       "\n  --json                       Show status as JSON"
+       "\n  -v, --version                Show version"
+       "\n  -h, --help                   Show this help message\n");
+}
 
-            // Read dock radius from the shared state
-            int tokenDockRadius = 0;
-            uint64_t currentDockRadius = 0;
-            if (notify_register_check("com.aspauldingcode.apple_sharpener.dock.set_radius", &tokenDockRadius) == NOTIFY_STATUS_OK) {
-                if (notify_get_state(tokenDockRadius, &currentDockRadius) != NOTIFY_STATUS_OK) {
-                    printf("Failed to read current dock radius\n");
-                    return 1;
-                }
-            } else {
-                printf("Failed to register dock set_radius notification for reading\n");
-                return 1;
-            }
-
-            // Read enabled status from persistent state
-            int tokenEnabled = 0;
-            uint64_t enabledState = 0;
-            if (notify_register_check("com.aspauldingcode.apple_sharpener.enabled", &tokenEnabled) == NOTIFY_STATUS_OK) {
-                if (notify_get_state(tokenEnabled, &enabledState) != NOTIFY_STATUS_OK) {
-                    printf("Failed to read current status\n");
-                    return 1;
-                }
-            } else {
-                printf("Failed to register enabled notification for reading\n");
-                return 1;
-            }
-            NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
-            BOOL persistedEnabled = [defaults boolForKey:@"enabled"];
-            enabledState = persistedEnabled ? 1 : 0;  // Use persisted value if needed
-            printf("Current radius: %llu\n", currentRadius);
-            printf("Current dock radius: %llu\n", currentDockRadius);
-            printf("Status: %s\n", enabledState ? "on" : "off");
-        } else {
-            printf("Unknown command: %s\n", [firstArg UTF8String]);
-            printUsage();
-            return 1;
-        }
+int main(int argc, const char *argv[]) {
+  @autoreleasepool {
+    if (argc < 2) {
+      printUsage();
+      return 1;
     }
-    return 0;
+
+    NSString *firstArg = [NSString stringWithUTF8String:argv[1]];
+
+    if ([firstArg isEqualToString:@"--help"] ||
+        [firstArg isEqualToString:@"-h"]) {
+      printUsage();
+      return 0;
+    }
+    if ([firstArg isEqualToString:@"--version"] ||
+        [firstArg isEqualToString:@"-v"]) {
+      printf("Apple Sharpener version: %s\n", APPLE_SHARPENER_VERSION);
+      return 0;
+    }
+
+    // Check for -w/--windows or -d/--dock or -q/--squircle or -e/--exponent
+    // flags
+    BOOL isWindowsOnly = NO;
+    BOOL isDockOnly = NO;
+    BOOL isSquircleOnly = NO;
+    BOOL isExponentOnly = NO;
+    NSString *command = firstArg;
+    BOOL isRadiusCommand = NO;
+
+    if ([firstArg isEqualToString:@"-w"] ||
+        [firstArg isEqualToString:@"--windows"]) {
+      isWindowsOnly = YES;
+      if (argc < 3) {
+        printf(
+            "Error: -w/--windows requires a value (on/off/toggle or radius)\n");
+        printUsage();
+        return 1;
+      }
+      NSString *secondArg = [NSString stringWithUTF8String:argv[2]];
+      // Check if it's a number (radius) or a command (on/off/toggle)
+      char *endptr;
+      strtoull([secondArg UTF8String], &endptr, 10);
+      if (*endptr == '\0' && secondArg.length > 0) {
+        // It's a number - treat as radius
+        isRadiusCommand = YES;
+        command = secondArg;
+      } else {
+        // It's a command - treat as toggle
+        command = secondArg;
+      }
+    } else if ([firstArg isEqualToString:@"-d"] ||
+               [firstArg isEqualToString:@"--dock"]) {
+      isDockOnly = YES;
+      if (argc < 3) {
+        printf("Error: -d/--dock requires a value (on/off/toggle or radius)\n");
+        printUsage();
+        return 1;
+      }
+      NSString *secondArg = [NSString stringWithUTF8String:argv[2]];
+      // Check if it's a number (radius) or a command (on/off/toggle)
+      char *endptr;
+      strtoull([secondArg UTF8String], &endptr, 10);
+      if (*endptr == '\0' && secondArg.length > 0) {
+        // It's a number - treat as radius
+        isRadiusCommand = YES;
+        command = secondArg;
+      } else {
+        // It's a command - treat as toggle
+        command = secondArg;
+      }
+    } else if ([firstArg isEqualToString:@"-q"] ||
+               [firstArg isEqualToString:@"--squircle"]) {
+      isSquircleOnly = YES;
+      if (argc < 3) {
+        printf("Error: -q/--squircle requires a value (on/off/toggle)\n");
+        printUsage();
+        return 1;
+      }
+      NSString *secondArg = [NSString stringWithUTF8String:argv[2]];
+      command = secondArg;
+    } else if ([firstArg isEqualToString:@"-e"] ||
+               [firstArg isEqualToString:@"--exponent"]) {
+      isExponentOnly = YES;
+      if (argc < 3) {
+        printf("Error: -e/--exponent requires a floating-point value (e.g. "
+               "4.0)\n");
+        printUsage();
+        return 1;
+      }
+      NSString *secondArg = [NSString stringWithUTF8String:argv[2]];
+      command = secondArg;
+    }
+
+    // Handle radius commands first (before toggle commands)
+    if (isRadiusCommand) {
+      NSUserDefaults *defaults = [[NSUserDefaults alloc]
+          initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+      uint64_t radius = strtoull([command UTF8String], NULL, 10);
+
+      // Validate radius limits
+      uint64_t minRadius = 0;
+      uint64_t maxRadius;
+      const char *componentName;
+
+      if (isWindowsOnly) {
+        maxRadius = 100;
+        componentName = "Windows";
+      } else if (isDockOnly) {
+        maxRadius = 46;
+        componentName = "Dock";
+      } else {
+        // This shouldn't happen for global radius in this code path
+        // Global radius is handled separately below
+        maxRadius = 100;
+        componentName = "Global";
+      }
+
+      if (radius < minRadius || radius > maxRadius) {
+        printf("Error: %s radius must be between %llu and %llu (got %llu)\n",
+               componentName, minRadius, maxRadius, radius);
+        return 1;
+      }
+
+      if (isWindowsOnly) {
+        // Windows-specific radius
+        int tokenSetRadius = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.set_radius",
+                &tokenSetRadius) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenSetRadius, radius);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.set_radius");
+        }
+        [defaults setInteger:radius forKey:@"windows_radius"];
+        [defaults synchronize];
+        printf("Windows radius set to %llu\n", radius);
+        sharpener_cli_commit();
+        return 0;
+      } else if (isDockOnly) {
+        // Dock-specific radius
+        int tokenSetRadius = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.dock.set_radius",
+                &tokenSetRadius) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenSetRadius, radius);
+          notify_post("com.aspauldingcode.apple_sharpener.dock.set_radius");
+        }
+        [defaults setInteger:radius forKey:@"dock_radius"];
+        [defaults synchronize];
+        printf("Dock radius set to %llu\n", radius);
+        sharpener_cli_commit();
+        return 0;
+      }
+    }
+
+    if (isExponentOnly) {
+      NSUserDefaults *defaults = [[NSUserDefaults alloc]
+          initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+      double requestedExponent = [command doubleValue];
+      double exponent = requestedExponent;
+      if (exponent <= 0)
+        exponent = 1e-7; // Epsilon trick, same as radius=0
+      if (exponent > 6.0)
+        exponent = 6.0; // Cap at maximum
+      [defaults setDouble:exponent forKey:@"squircle_exponent"];
+      [defaults synchronize];
+
+      int tokenEnabled = 0;
+      if (notify_register_check(
+              "com.aspauldingcode.apple_sharpener.squircle.exponent",
+              &tokenEnabled) == NOTIFY_STATUS_OK) {
+        notify_set_state(tokenEnabled, 1);
+        notify_post("com.aspauldingcode.apple_sharpener.squircle.exponent");
+      }
+
+      // Ping the windows radius update to force a visual redraw immediately
+      int tokenWindowsRadius = 0;
+      if (notify_register_check(
+              "com.aspauldingcode.apple_sharpener.windows.set_radius",
+              &tokenWindowsRadius) == NOTIFY_STATUS_OK) {
+        notify_set_state(tokenWindowsRadius,
+                         [defaults integerForKey:@"windows_radius"]);
+        notify_post("com.aspauldingcode.apple_sharpener.windows.set_radius");
+      }
+
+      if (requestedExponent > 6.0) {
+        printf("Squircle exponent set to %.2f (capped at maximum of 6.0, "
+               "requested: %.2f)\n",
+               exponent, requestedExponent);
+      } else {
+        printf("Squircle exponent set to %.2f\n", exponent);
+      }
+      sharpener_cli_commit();
+      return 0;
+    }
+
+    // Handle toggle commands
+    if ([command isEqualToString:@"on"]) {
+      NSUserDefaults *defaults = [[NSUserDefaults alloc]
+          initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+
+      if (isWindowsOnly) {
+        // Windows only
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, 1);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.enabled");
+        }
+        [defaults setBool:YES forKey:@"windows_enabled"];
+        [defaults synchronize];
+        printf("Windows sharpener enabled\n");
+      } else if (isDockOnly) {
+        // Dock only
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.dock.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, 1);
+          notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
+        }
+        [defaults setBool:YES forKey:@"dock_enabled"];
+        [defaults synchronize];
+        printf("Dock sharpener enabled\n");
+      } else if (isSquircleOnly) {
+        // Squircle only
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.squircle.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, 1);
+          notify_post("com.aspauldingcode.apple_sharpener.squircle.enabled");
+        }
+
+        // Ping the windows radius update to force a visual redraw immediately
+        int tokenWindowsRadius = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.set_radius",
+                &tokenWindowsRadius) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenWindowsRadius,
+                           [defaults integerForKey:@"windows_radius"]);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.set_radius");
+        }
+
+        [defaults setBool:YES forKey:@"squircle_enabled"];
+        [defaults synchronize];
+        printf("Squircle continuous corners enabled\n");
+      } else {
+        // Both (global)
+        notify_post("com.aspauldingcode.apple_sharpener.enable");
+        int tokenEnabled = 0;
+        if (notify_register_check("com.aspauldingcode.apple_sharpener.enabled",
+                                  &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, 1);
+          notify_post("com.aspauldingcode.apple_sharpener.enabled");
+        }
+        // Also set windows and dock separately
+        int tokenWindows = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.enabled",
+                &tokenWindows) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenWindows, 1);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.enabled");
+        }
+        int tokenDock = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.dock.enabled",
+                &tokenDock) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenDock, 1);
+          notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
+        }
+        [defaults setBool:YES forKey:@"enabled"];
+        [defaults setBool:YES forKey:@"windows_enabled"];
+        [defaults setBool:YES forKey:@"dock_enabled"];
+        [defaults synchronize];
+        printf("Sharpener enabled (windows and dock)\n");
+      }
+      sharpener_cli_commit();
+    } else if ([command isEqualToString:@"off"]) {
+      NSUserDefaults *defaults = [[NSUserDefaults alloc]
+          initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+
+      if (isWindowsOnly) {
+        // Windows only
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, 0);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.enabled");
+        }
+        [defaults setBool:NO forKey:@"windows_enabled"];
+        [defaults synchronize];
+        printf("Windows sharpener disabled\n");
+      } else if (isDockOnly) {
+        // Dock only
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.dock.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, 0);
+          notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
+        }
+        [defaults setBool:NO forKey:@"dock_enabled"];
+        [defaults synchronize];
+        printf("Dock sharpener disabled\n");
+      } else if (isSquircleOnly) {
+        // Squircle only
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.squircle.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, 0);
+          notify_post("com.aspauldingcode.apple_sharpener.squircle.enabled");
+        }
+
+        // Ping the windows radius update to force a visual redraw immediately
+        int tokenWindowsRadius = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.set_radius",
+                &tokenWindowsRadius) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenWindowsRadius,
+                           [defaults integerForKey:@"windows_radius"]);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.set_radius");
+        }
+
+        [defaults setBool:NO forKey:@"squircle_enabled"];
+        [defaults synchronize];
+        printf("Squircle continuous corners disabled\n");
+      } else {
+        // Both (global)
+        notify_post("com.aspauldingcode.apple_sharpener.disable");
+        int tokenEnabled = 0;
+        if (notify_register_check("com.aspauldingcode.apple_sharpener.enabled",
+                                  &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, 0);
+          notify_post("com.aspauldingcode.apple_sharpener.enabled");
+        }
+        // Also set windows and dock separately
+        int tokenWindows = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.enabled",
+                &tokenWindows) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenWindows, 0);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.enabled");
+        }
+        int tokenDock = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.dock.enabled",
+                &tokenDock) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenDock, 0);
+          notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
+        }
+        [defaults setBool:NO forKey:@"enabled"];
+        [defaults setBool:NO forKey:@"windows_enabled"];
+        [defaults setBool:NO forKey:@"dock_enabled"];
+        [defaults synchronize];
+        printf("Sharpener disabled (windows and dock)\n");
+      }
+      sharpener_cli_commit();
+    } else if ([command isEqualToString:@"toggle"]) {
+      NSUserDefaults *defaults = [[NSUserDefaults alloc]
+          initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+
+      if (isWindowsOnly) {
+        // Windows only
+        BOOL currentEnabled = [defaults boolForKey:@"windows_enabled"];
+        BOOL newEnabled = !currentEnabled;
+
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, newEnabled ? 1 : 0);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.enabled");
+        }
+        [defaults setBool:newEnabled forKey:@"windows_enabled"];
+        [defaults synchronize];
+        printf("Windows sharpener %s\n", newEnabled ? "enabled" : "disabled");
+      } else if (isDockOnly) {
+        // Dock only
+        BOOL currentEnabled = [defaults boolForKey:@"dock_enabled"];
+        BOOL newEnabled = !currentEnabled;
+
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.dock.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, newEnabled ? 1 : 0);
+          notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
+        }
+        [defaults setBool:newEnabled forKey:@"dock_enabled"];
+        [defaults synchronize];
+        printf("Dock sharpener %s\n", newEnabled ? "enabled" : "disabled");
+      } else if (isSquircleOnly) {
+        // Squircle only
+        BOOL currentEnabled = YES;
+        if ([defaults objectForKey:@"squircle_enabled"] != nil) {
+          currentEnabled = [defaults boolForKey:@"squircle_enabled"];
+        }
+        BOOL newEnabled = !currentEnabled;
+
+        int tokenEnabled = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.squircle.enabled",
+                &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, newEnabled ? 1 : 0);
+          notify_post("com.aspauldingcode.apple_sharpener.squircle.enabled");
+        }
+
+        // Ping the windows radius update to force a visual redraw immediately
+        int tokenWindowsRadius = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.set_radius",
+                &tokenWindowsRadius) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenWindowsRadius,
+                           [defaults integerForKey:@"windows_radius"]);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.set_radius");
+        }
+
+        [defaults setBool:newEnabled forKey:@"squircle_enabled"];
+        [defaults synchronize];
+        printf("Squircle continuous corners %s\n",
+               newEnabled ? "enabled" : "disabled");
+      } else {
+        // Both (global)
+        BOOL currentEnabled = YES;
+        if ([defaults objectForKey:@"enabled"] != nil) {
+          currentEnabled = [defaults boolForKey:@"enabled"];
+        }
+        BOOL newEnabled = !currentEnabled;
+
+        notify_post("com.aspauldingcode.apple_sharpener.toggle");
+        int tokenEnabled = 0;
+        if (notify_register_check("com.aspauldingcode.apple_sharpener.enabled",
+                                  &tokenEnabled) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenEnabled, newEnabled ? 1 : 0);
+          notify_post("com.aspauldingcode.apple_sharpener.enabled");
+        }
+        // Also toggle windows and dock separately
+        int tokenWindows = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.windows.enabled",
+                &tokenWindows) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenWindows, newEnabled ? 1 : 0);
+          notify_post("com.aspauldingcode.apple_sharpener.windows.enabled");
+        }
+        int tokenDock = 0;
+        if (notify_register_check(
+                "com.aspauldingcode.apple_sharpener.dock.enabled",
+                &tokenDock) == NOTIFY_STATUS_OK) {
+          notify_set_state(tokenDock, newEnabled ? 1 : 0);
+          notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
+        }
+        [defaults setBool:newEnabled forKey:@"enabled"];
+        [defaults setBool:newEnabled forKey:@"windows_enabled"];
+        [defaults setBool:newEnabled forKey:@"dock_enabled"];
+        [defaults synchronize];
+        printf("Sharpener %s (windows and dock)\n",
+               newEnabled ? "enabled" : "disabled");
+      }
+      sharpener_cli_commit();
+      return 0;
+    } else if ([firstArg hasPrefix:@"--radius="] ||
+               ([firstArg isEqualToString:@"-r"] && argc > 2) ||
+               [firstArg isEqualToString:@"--radius"]) {
+      uint64_t radius = 0;
+      if ([firstArg hasPrefix:@"--radius="]) {
+        radius =
+            strtoull([[firstArg substringFromIndex:9] UTF8String], NULL, 10);
+      } else {
+        radius = strtoull(argv[2], NULL, 10);
+      }
+
+      // Validate global radius (0-100, dock will be capped at 46)
+      if (radius < 0 || radius > 100) {
+        printf("Error: Global radius must be between 0 and 100 (got %llu)\n",
+               radius);
+        return 1;
+      }
+
+      NSUserDefaults *defaults = [[NSUserDefaults alloc]
+          initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+
+      // Set global radius (affects both windows and dock)
+      int tokenSetRadius = 0;
+      if (notify_register_check("com.aspauldingcode.apple_sharpener.set_radius",
+                                &tokenSetRadius) == NOTIFY_STATUS_OK) {
+        notify_set_state(tokenSetRadius, radius);
+        notify_post("com.aspauldingcode.apple_sharpener.set_radius");
+      }
+      // Set windows to the full radius value
+      int tokenWindowsRadius = 0;
+      if (notify_register_check(
+              "com.aspauldingcode.apple_sharpener.windows.set_radius",
+              &tokenWindowsRadius) == NOTIFY_STATUS_OK) {
+        notify_set_state(tokenWindowsRadius, radius);
+        notify_post("com.aspauldingcode.apple_sharpener.windows.set_radius");
+      }
+      // Cap dock at 46 if global radius exceeds dock's maximum
+      uint64_t dockRadius = (radius > 46) ? 46 : radius;
+      int tokenDockRadius = 0;
+      if (notify_register_check(
+              "com.aspauldingcode.apple_sharpener.dock.set_radius",
+              &tokenDockRadius) == NOTIFY_STATUS_OK) {
+        notify_set_state(tokenDockRadius, dockRadius);
+        notify_post("com.aspauldingcode.apple_sharpener.dock.set_radius");
+      }
+      [defaults setInteger:radius forKey:@"radius"];
+      [defaults setInteger:radius forKey:@"windows_radius"];
+      [defaults setInteger:dockRadius forKey:@"dock_radius"];
+      [defaults synchronize];
+      if (radius > 46) {
+        printf("Global radius set to %llu (windows: %llu, dock: %llu - capped "
+               "at maximum)\n",
+               radius, radius, dockRadius);
+      } else {
+        printf("Global radius set to %llu (windows and dock)\n", radius);
+      }
+      sharpener_cli_commit();
+      return 0;
+    } else if ([firstArg hasPrefix:@"--dock-radius="] ||
+               ([firstArg isEqualToString:@"--dock-radius"] && argc > 2)) {
+      // Support --dock-radius for backward compatibility, but -d is preferred
+      uint64_t radius = 0;
+      if ([firstArg hasPrefix:@"--dock-radius="]) {
+        radius =
+            strtoull([[firstArg substringFromIndex:14] UTF8String], NULL, 10);
+      } else {
+        radius = strtoull(argv[2], NULL, 10);
+      }
+
+      // Validate dock radius (0-46)
+      if (radius < 0 || radius > 46) {
+        printf("Error: Dock radius must be between 0 and 46 (got %llu)\n",
+               radius);
+        return 1;
+      }
+
+      int tokenSetRadius = 0;
+      if (notify_register_check(
+              "com.aspauldingcode.apple_sharpener.dock.set_radius",
+              &tokenSetRadius) == NOTIFY_STATUS_OK) {
+        notify_set_state(tokenSetRadius, radius);
+        notify_post("com.aspauldingcode.apple_sharpener.dock.set_radius");
+        NSUserDefaults *defaults = [[NSUserDefaults alloc]
+            initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+        [defaults setInteger:radius forKey:@"dock_radius"];
+        [defaults synchronize];
+        printf("Dock radius set to %llu\n", radius);
+        sharpener_cli_commit();
+      } else {
+        printf("Failed to register dock set_radius notification\n");
+        return 1;
+      }
+      return 0;
+    } else if ([firstArg isEqualToString:@"--status"] ||
+               [firstArg isEqualToString:@"-s"] ||
+               [firstArg isEqualToString:@"--json"]) {
+      BOOL jsonOutput = [firstArg isEqualToString:@"--json"];
+
+      NSUserDefaults *defaults = [[NSUserDefaults alloc]
+          initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+
+      // Read global radius - first check notify state, fall back to defaults
+      int tokenShowRadius = 0;
+      uint64_t currentRadius = 0;
+      if (notify_register_check("com.aspauldingcode.apple_sharpener.set_radius",
+                                &tokenShowRadius) == NOTIFY_STATUS_OK) {
+        notify_get_state(tokenShowRadius, &currentRadius);
+      }
+      // Authoritative: always prefer NSUserDefaults value if set
+      if ([defaults objectForKey:@"radius"] != nil) {
+        currentRadius = [defaults integerForKey:@"radius"];
+      }
+
+      uint64_t currentWindowsRadius =
+          [defaults integerForKey:@"windows_radius"];
+      if (currentWindowsRadius == 0)
+        currentWindowsRadius = currentRadius;
+
+      // Dock radius: try notify state, fall back to defaults
+      int tokenDockRadius = 0;
+      uint64_t currentDockRadius = 0;
+      if (notify_register_check(
+              "com.aspauldingcode.apple_sharpener.dock.set_radius",
+              &tokenDockRadius) == NOTIFY_STATUS_OK) {
+        notify_get_state(tokenDockRadius, &currentDockRadius);
+      }
+      if ([defaults objectForKey:@"dock_radius"] != nil) {
+        currentDockRadius = [defaults integerForKey:@"dock_radius"];
+      }
+      if (currentDockRadius == 0)
+        currentDockRadius = currentRadius;
+
+      // Boolean states — read from NSUserDefaults (authoritative source)
+      BOOL windowsEnabled = [defaults objectForKey:@"windows_enabled"] != nil
+                                ? [defaults boolForKey:@"windows_enabled"]
+                                : YES;
+      BOOL dockEnabled = [defaults objectForKey:@"dock_enabled"] != nil
+                             ? [defaults boolForKey:@"dock_enabled"]
+                             : YES;
+      BOOL globalEnabled = [defaults objectForKey:@"enabled"] != nil
+                               ? [defaults boolForKey:@"enabled"]
+                               : YES;
+      BOOL squircleEnabled = [defaults objectForKey:@"squircle_enabled"] != nil
+                                 ? [defaults boolForKey:@"squircle_enabled"]
+                                 : YES;
+      double squircleExponent =
+          [defaults objectForKey:@"squircle_exponent"] != nil
+              ? [defaults doubleForKey:@"squircle_exponent"]
+              : 4.0;
+
+      if (jsonOutput) {
+        printf("{\n"
+               "  \"global\": {\n"
+               "    \"enabled\": %s,\n"
+               "    \"radius\": %llu\n"
+               "  },\n"
+               "  \"windows\": {\n"
+               "    \"enabled\": %s,\n"
+               "    \"radius\": %llu\n"
+               "  },\n"
+               "  \"dock\": {\n"
+               "    \"enabled\": %s,\n"
+               "    \"radius\": %llu\n"
+               "  },\n"
+               "  \"squircle\": {\n"
+               "    \"enabled\": %s,\n"
+               "    \"exponent\": %.2f\n"
+               "  }\n"
+               "}\n",
+               globalEnabled ? "true" : "false", currentRadius,
+               windowsEnabled ? "true" : "false", currentWindowsRadius,
+               dockEnabled ? "true" : "false", currentDockRadius,
+               squircleEnabled ? "true" : "false", squircleExponent);
+      } else {
+        printf("\n"
+               "  Apple Sharpener  %s\n"
+               "  ─────────────────────────\n"
+               "  Global     %-3s   radius: %llu\n"
+               "  Windows    %-3s   radius: %llu\n"
+               "  Dock       %-3s   radius: %llu\n"
+               "  Squircle   %-3s   exponent: %.2f\n"
+               "\n",
+               globalEnabled ? "●" : "○", globalEnabled ? "on" : "off",
+               currentRadius, windowsEnabled ? "on" : "off",
+               currentWindowsRadius, dockEnabled ? "on" : "off",
+               currentDockRadius, squircleEnabled ? "on" : "off",
+               squircleExponent);
+      }
+      return 0;
+    } else {
+      printf("Unknown command: %s\n", [firstArg UTF8String]);
+      printUsage();
+      return 1;
+    }
+  }
+  return 0;
 }

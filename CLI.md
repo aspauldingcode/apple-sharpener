@@ -5,20 +5,26 @@ This document explains how to use the `sharpener` command‑line tool to control
 ## Quick Start
 
 ```bash
-# Enable or disable
+# Global enable/disable (affects both windows and dock)
 sharpener on
 sharpener off
-
-# Toggle
 sharpener toggle
 
-# Set window radius
-sharpener -r 40
-sharpener --radius=40
+# Windows-specific controls
+sharpener -w on
+sharpener -w off
+sharpener -w toggle
+sharpener -w 40          # Set windows radius to 40
 
-# Set dock radius
-sharpener -d 20
-sharpener --dock-radius=20
+# Dock-specific controls
+sharpener -d on
+sharpener -d off
+sharpener -d toggle
+sharpener -d 0          # Set dock radius to 0
+
+# Global radius (affects both if not explicitly set)
+sharpener -r 10
+sharpener --radius=10
 
 # Show current settings
 sharpener -s
@@ -31,47 +37,88 @@ sharpener --version
 
 ## Commands
 
-- `on` — Enable window sharpening
-- `off` — Disable window sharpening
-- `toggle` — Toggle window sharpening on/off
+### Global Commands
+- `on` — Enable sharpening for both windows and dock
+- `off` — Disable sharpening for both windows and dock
+- `toggle` — Toggle sharpening on/off for both windows and dock
+
+### Windows-Specific Commands
+- `-w on` — Enable window sharpening only
+- `-w off` — Disable window sharpening only
+- `-w toggle` — Toggle window sharpening on/off
+- `-w <value>` — Set windows-specific radius (integer `>= 0`)
+
+### Dock-Specific Commands
+- `-d on` — Enable dock sharpening only
+- `-d off` — Disable dock sharpening only
+- `-d toggle` — Toggle dock sharpening on/off
+- `-d <value>` — Set dock-specific radius (integer `>= 0`)
 
 ## Options
 
-- `-r, --radius <value>` — Set the window sharpening radius (integer `>= 0`)
-- `--radius=<value>` — Alternative syntax to set window radius
-- `-d, --dock-radius <value>` — Set the dock radius (integer `>= 0`)
-- `--dock-radius=<value>` — Alternative syntax to set dock radius
-- `-s, --status` — Show current window radius, dock radius, and status (`on`/`off`)
+- `-r, --radius <value>` — Set global radius (affects both windows and dock if not explicitly set)
+- `--radius=<value>` — Alternative syntax to set global radius
+- `-w, --windows <value>` — Set windows-specific radius OR use with `on`/`off`/`toggle` to control windows
+- `-d, --dock <value>` — Set dock-specific radius OR use with `on`/`off`/`toggle` to control dock
+- `-s, --status` — Show current windows radius, dock radius, and status for each
 - `-v, --version` — Show CLI version
 - `-h, --help` — Show built‑in help
 
 ## Examples
 
 ```bash
-# Set window radius to 0 for sharp (square) corners
-sharpener -r 0
+# Set windows radius to 0 for sharp (square) corners
+sharpener -w 0
 
 # Set dock radius to 15
 sharpener -d 15
 
-# Set window radius to 40 and enable immediately
-sharpener on && sharpener -r 40
+# Set global radius (affects both if not explicitly set)
+sharpener -r 40
+
+# Enable windows only
+sharpener -w on
+
+# Disable dock only (windows remain enabled)
+sharpener -d off
+
+# Toggle windows on/off
+sharpener -w toggle
+
+# Set windows radius and enable immediately
+sharpener -w on && sharpener -w 40
 
 # Query current status
 sharpener -s
 # Output example:
-# Current radius: 40
-# Current dock radius: 15
-# Status: on
+# Global radius: 40
+# Windows radius: 40 (using global)
+# Dock radius: 15 (explicit)
+# Windows status: on
+# Dock status: on
+# Global status: on
 
 # Show version
 sharpener --version
 # Output example:
-# Apple Sharpener version: 0.1
+# Apple Sharpener version: 0.0.3
 ```
 
 ## Behavior Notes
 
+### Radius Priority
+- **Windows-specific radius** (`-w <value>`) takes precedence over global radius (`-r <value>`) for windows
+- **Dock-specific radius** (`-d <value>`) takes precedence over global radius (`-r <value>`) for dock
+- If a specific radius is not set, the component falls back to the global radius
+- Global radius (`-r <value>`) applies to both windows and dock if neither has an explicit setting
+
+### Enable/Disable Priority
+- **Windows-specific toggle** (`-w on/off/toggle`) controls windows independently of dock
+- **Dock-specific toggle** (`-d on/off/toggle`) controls dock independently of windows
+- **Global toggle** (`on/off/toggle`) affects both windows and dock
+- If windows/dock is explicitly disabled, it remains disabled even if global is enabled
+
+### Window Targeting
 - Targets standard application windows only; menus, popovers, HUD/utility windows are preserved.
 - Fullscreen windows use a radius of `0` to avoid visual artifacts.
 - Changes apply live across open windows; no app relaunch required.
@@ -84,5 +131,6 @@ sharpener --version
 
 ## Troubleshooting
 
-- Run `sharpener -s` to confirm status and radius.
+- Run `sharpener -s` to confirm status and radius for both windows and dock.
 - Ensure system requirements from the main README are met.
+- If windows/dock don't respond to radius changes, check if they're explicitly disabled with `sharpener -w off` or `sharpener -d off`.

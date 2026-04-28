@@ -17,6 +17,12 @@
 BOOL isDockProcess(void);
 
 /**
+ * Register Dock notification listeners and CALayer hooks (call from the Dock
+ * process only, after AppKit has loaded).
+ */
+void setupDockNotifications(void);
+
+/**
  * Toggle square corners for the dock
  * @param enable Whether to enable custom corner radius
  * @param radius The corner radius to apply (0 for square corners)

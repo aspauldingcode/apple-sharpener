@@ -8,8 +8,8 @@ REPO_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 VERSION=$(cat "$REPO_ROOT/VERSION")
 PKG_NAME="apple-sharpener-${VERSION}.pkg"
 CHANGELOG_FILE="$REPO_ROOT/CHANGELOG.md"
-BUILD_FILE="$REPO_ROOT/build/libapple_sharpener.dylib"
-CLI_BUILD_FILE="$REPO_ROOT/build/sharpener"
+BUILD_FILE="$REPO_ROOT/out/libapple_sharpener.dylib"
+CLI_BUILD_FILE="$REPO_ROOT/out/sharpener"
 
 # Change to repository root
 cd "$REPO_ROOT"
@@ -51,10 +51,36 @@ if ! cp libapple_sharpener.dylib.blacklist "$PAYLOAD_DIR/var/ammonia/core/tweaks
     exit 1
 fi
 
-# Copy CLI to /usr/local/bin
+# Copy CLI and Helper to /usr/local/bin
 mkdir -p "$PAYLOAD_DIR/usr/local/bin"
 if ! cp "$CLI_BUILD_FILE" "$PAYLOAD_DIR/usr/local/bin/"; then
     echo "Error: Failed to copy CLI"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+if ! cp "$REPO_ROOT/out/sharpener-helper" "$PAYLOAD_DIR/usr/local/bin/"; then
+    echo "Error: Failed to copy Helper"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
+# Copy ASConfigurator app to /Applications
+mkdir -p "$PAYLOAD_DIR/Applications"
+if ! cp -r "$REPO_ROOT/src/gui/ASConfigurator/Apple Sharpener Configurator.app" "$PAYLOAD_DIR/Applications/"; then
+    echo "Error: Failed to copy Apple Sharpener Configurator"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
+# Copy LaunchAgents
+mkdir -p "$PAYLOAD_DIR/Library/LaunchAgents"
+if ! cp "$REPO_ROOT/src/helper/com.aspauldingcode.sharpener.helper.plist" "$PAYLOAD_DIR/Library/LaunchAgents/"; then
+    echo "Error: Failed to copy helper plist"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+if ! cp "$REPO_ROOT/src/gui/ASConfigurator/com.aspauldingcode.asconfigurator.plist" "$PAYLOAD_DIR/Library/LaunchAgents/"; then
+    echo "Error: Failed to copy configurator plist"
     rm -rf "$TEMP_DIR"
     exit 1
 fi
@@ -62,6 +88,18 @@ fi
 # Create postinstall script
 cat > "$SCRIPTS_DIR/postinstall" << 'EOF'
 #!/bin/bash
+
+# Remove any root-loaded instances
+launchctl bootout system /Library/LaunchAgents/com.aspauldingcode.sharpener.helper.plist 2>/dev/null || launchctl unload /Library/LaunchAgents/com.aspauldingcode.sharpener.helper.plist 2>/dev/null || true
+launchctl bootout system /Library/LaunchAgents/com.aspauldingcode.asconfigurator.plist 2>/dev/null || launchctl unload /Library/LaunchAgents/com.aspauldingcode.asconfigurator.plist 2>/dev/null || true
+
+# Load for the current console user
+USER_NAME=$(stat -f %Su /dev/console)
+if [ -n "$USER_NAME" ] && [ "$USER_NAME" != "root" ]; then
+    USER_ID=$(id -u "$USER_NAME")
+    launchctl bootstrap gui/$USER_ID /Library/LaunchAgents/com.aspauldingcode.sharpener.helper.plist 2>/dev/null || sudo -u "$USER_NAME" launchctl load /Library/LaunchAgents/com.aspauldingcode.sharpener.helper.plist 2>/dev/null || true
+    launchctl bootstrap gui/$USER_ID /Library/LaunchAgents/com.aspauldingcode.asconfigurator.plist 2>/dev/null || sudo -u "$USER_NAME" launchctl load /Library/LaunchAgents/com.aspauldingcode.asconfigurator.plist 2>/dev/null || true
+fi
 
 # Restart Ammonia service (script runs as root in pkg context; sudo not required)
 sleep 2
