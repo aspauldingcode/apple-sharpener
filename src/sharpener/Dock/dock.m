@@ -138,12 +138,7 @@ void toggleDockCorners(BOOL enable, NSInteger radius) {
 static void setupDockNotifications(void) __attribute__((constructor));
 static void setupDockNotifications(void) {
     // Only setup if we're in the Dock process
-    if (!isDockProcess()) {
-        NSLog(@"[AppleSharpener] Not in Dock process (bundle ID: %@), skipping setup", [[NSBundle mainBundle] bundleIdentifier]);
-        return;
-    }
-    
-    NSLog(@"[AppleSharpener] Setting up dock notifications in process: %@", [[NSBundle mainBundle] bundleIdentifier]);
+    if (!isDockProcess()) return;
     
     // Load persisted settings from NSUserDefaults
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];

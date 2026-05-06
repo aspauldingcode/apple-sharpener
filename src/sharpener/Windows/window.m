@@ -34,7 +34,8 @@ static inline BOOL isStandardAppWindow(NSWindow *window) {
     if (mask & (NSWindowStyleMaskHUDWindow | NSWindowStyleMaskUtilityWindow)) return NO;
     
     // Exclude context menus, tooltips, and other transient windows
-    if (window.level != NSNormalWindowLevel) return NO;
+    // Relaxed window level check to allow Finder and other system windows
+    // if (window.level != NSNormalWindowLevel) return NO;
     
     // Exclude very small windows (likely UI elements)
     NSRect frame = window.frame;
@@ -97,8 +98,6 @@ static void setupWindowNotifications(void) {
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidBecomeKeyNotification object:nil queue:nil usingBlock:^(NSNotification *notification) {
         applyCornerRadiusToWindow(notification.object);
     }];
-
-    NSLog(@"[AppleSharpener] Windows: Loaded enableSharpener: %d, customRadius: %ld", enableSharpener, (long)customRadius);
 
     toggleSquareCorners(enableSharpener, customRadius);
 
@@ -188,6 +187,16 @@ static void setupWindowNotifications(void) {
 }
 
 - (id)_cornerMask {
+    if (enableSharpener && customRadius == 0 && isStandardAppWindow(self)) {
+        // Create a 1x1 white image for square corners
+        NSImage *squareCornerMask = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
+        [squareCornerMask lockFocus];
+        [[NSColor whiteColor] set];
+        NSRectFill(NSMakeRect(0, 0, 1, 1));
+        [squareCornerMask unlockFocus];
+        return squareCornerMask;
+    }
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wcast-function-type-mismatch"
     return ZKOrig(id);
@@ -216,8 +225,8 @@ ZKSwizzleInterfaceGroup(AS_TitlebarDecorationView, _NSTitlebarDecorationView, NS
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    if (enableSharpener && customRadius != 0 && isStandardAppWindow(self.window)) {
-        return;  // Suppress drawing when custom radius is used (but not when radius is 0)
+    if (enableSharpener && isStandardAppWindow(self.window)) {
+        return;  // Suppress drawing when sharpener is enabled to ensure corners remain sharp
     }
     
 #pragma clang diagnostic push
