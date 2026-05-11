@@ -13,6 +13,7 @@ void printUsage() {
          "\n\nOptions:"
          "\n  -r, --radius <value>   Set sharpening radius"
          "\n  -d, --dock-radius <value>  Set dock radius"
+         "\n  --shadows [on|off]     Toggle window shadows (default: on)"
          "\n  -s, --status           Show current radius and status"
          "\n  -v, --version          Show version"
          "\n  -h, --help             Show this help message\n");
@@ -121,6 +122,30 @@ int main(int argc, const char * argv[]) {
                 printf("Failed to register dock set_radius notification\n");
                 return 1;
             }
+        } else if ([firstArg isEqualToString:@"--shadows"] && argc > 2) {
+            NSString *shadowArg = [NSString stringWithUTF8String:argv[2]];
+            BOOL remove = NO;
+            if ([shadowArg isEqualToString:@"off"]) {
+                remove = YES;
+            } else if ([shadowArg isEqualToString:@"on"]) {
+                remove = NO;
+            } else {
+                printf("Invalid shadow state: %s. Use 'on' or 'off'.\n", [shadowArg UTF8String]);
+                return 1;
+            }
+            
+            int tokenShadows = 0;
+            if (notify_register_check("com.aspauldingcode.apple_sharpener.remove_shadows", &tokenShadows) == NOTIFY_STATUS_OK) {
+                notify_set_state(tokenShadows, remove);
+                notify_post("com.aspauldingcode.apple_sharpener.remove_shadows");
+                NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+                [defaults setBool:remove forKey:@"remove_shadows"];
+                [defaults synchronize];
+                printf("Window shadows %s\n", remove ? "disabled" : "enabled");
+            } else {
+                printf("Failed to register shadows notification\n");
+                return 1;
+            }
         } else if ([firstArg isEqualToString:@"--status"] || [firstArg isEqualToString:@"-s"]) {
             // Read the current radius from the shared state on the set_radius channel
             int tokenShowRadius = 0;
@@ -162,9 +187,11 @@ int main(int argc, const char * argv[]) {
             }
             NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
             BOOL persistedEnabled = [defaults boolForKey:@"enabled"];
+            BOOL removeShadows = [defaults boolForKey:@"remove_shadows"];
             enabledState = persistedEnabled ? 1 : 0;  // Use persisted value if needed
             printf("Current radius: %llu\n", currentRadius);
             printf("Current dock radius: %llu\n", currentDockRadius);
+            printf("Window shadows: %s\n", removeShadows ? "off" : "on");
             printf("Status: %s\n", enabledState ? "on" : "off");
         } else {
             printf("Unknown command: %s\n", [firstArg UTF8String]);

@@ -15,4 +15,10 @@
  */
 void toggleSquareCorners(BOOL enable, NSInteger radius);
 
+/**
+ * Toggle window shadows for application windows
+ * @param remove Whether to remove window shadows
+ */
+void toggleWindowShadows(BOOL remove);
+
 #endif /* WINDOW_H */

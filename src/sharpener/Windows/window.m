@@ -13,10 +13,12 @@
 static BOOL enableSharpener = YES;
 static BOOL enableCustomRadius = YES;
 static NSInteger customRadius = 0;
+static BOOL removeShadows = NO;
 
 #pragma mark - Forward Declarations
 
 void toggleSquareCorners(BOOL enable, NSInteger radius);
+void toggleWindowShadows(BOOL remove);
 static void setupWindowNotifications(void) __attribute__((constructor));
 
 #pragma mark - Helper Functions
@@ -27,15 +29,11 @@ static inline BOOL isStandardAppWindow(NSWindow *window) {
     if (!window) return NO;
     NSWindowStyleMask mask = window.styleMask;
     
-    // Only apply to standard titled windows, exclude system UI elements
+    // Only apply to standard titled windows
     if (!(mask & NSWindowStyleMaskTitled)) return NO;
     
     // Exclude HUD, utility, and other system windows
     if (mask & (NSWindowStyleMaskHUDWindow | NSWindowStyleMaskUtilityWindow)) return NO;
-    
-    // Exclude context menus, tooltips, and other transient windows
-    // Relaxed window level check to allow Finder and other system windows
-    // if (window.level != NSNormalWindowLevel) return NO;
     
     // Exclude very small windows (likely UI elements)
     NSRect frame = window.frame;
@@ -47,9 +45,17 @@ static inline BOOL isStandardAppWindow(NSWindow *window) {
 static void applyCornerRadiusToWindow(NSWindow *window) {
     if (!window || !enableSharpener) return;
     if (!isStandardAppWindow(window)) return;
-    if (!(enableSharpener && enableCustomRadius)) return;
     
-    [(id)window setValue:@(customRadius) forKey:@"cornerRadius"];
+    if (enableSharpener && enableCustomRadius) {
+        [(id)window setValue:@(customRadius) forKey:@"cornerRadius"];
+    }
+    
+    if (removeShadows) {
+        [window setHasShadow:NO];
+    } else {
+        [window setHasShadow:YES];
+    }
+    
     [window invalidateShadow];
 }
 
@@ -63,10 +69,27 @@ void toggleSquareCorners(BOOL enable, NSInteger radius) {
     
     if (stateChanged) {
         for (NSWindow *window in [NSApplication sharedApplication].windows) {
-            if (enableSharpener && enableCustomRadius) {
+            if (enableSharpener) {
                 applyCornerRadiusToWindow(window);
             } else if (isStandardAppWindow(window)) {
                 [(id)window setValue:@0 forKey:@"cornerRadius"];
+                [window setHasShadow:YES];
+                [window invalidateShadow];
+            }
+        }
+    }
+}
+
+void toggleWindowShadows(BOOL remove) {
+    BOOL stateChanged = (removeShadows != remove);
+    removeShadows = remove;
+    
+    if (stateChanged) {
+        for (NSWindow *window in [NSApplication sharedApplication].windows) {
+            if (enableSharpener) {
+                applyCornerRadiusToWindow(window);
+            } else if (isStandardAppWindow(window)) {
+                [window setHasShadow:!removeShadows];
                 [window invalidateShadow];
             }
         }
@@ -81,13 +104,14 @@ static void setupWindowNotifications(void) {
 
     dispatch_queue_t queue = dispatch_get_main_queue();
 
-    static const char *kNotifyEnabled = "com.aspauldingcode.apple_sharpener.enabled";
     static const char *kNotifyRadius  = "com.aspauldingcode.apple_sharpener.set_radius";
+    static const char *kNotifyShadows = "com.aspauldingcode.apple_sharpener.remove_shadows";
 
     // Load persisted state from NSUserDefaults
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
     enableSharpener = [defaults boolForKey:@"enabled"];
     customRadius = [defaults integerForKey:@"radius"];
+    removeShadows = [defaults boolForKey:@"remove_shadows"];
 
     // Add observers for multiple window events to catch all window creation scenarios
     // Add observers for window events to apply corner radius when windows become active
@@ -135,12 +159,37 @@ static void setupWindowNotifications(void) {
         [defaults setInteger:customRadius forKey:@"radius"];
         [defaults synchronize];
     });
+
+    int tokenShadows = 0;
+    notify_register_dispatch(kNotifyShadows, &tokenShadows, queue, ^(int t){
+        uint64_t state = 0;
+        if (notify_get_state(t, &state) == NOTIFY_STATUS_OK) {
+            toggleWindowShadows((BOOL)state);
+        }
+        [defaults setBool:removeShadows forKey:@"remove_shadows"];
+        [defaults synchronize];
+    });
 }
 
 #pragma mark - Swizzled NSWindow
 
  ZKSwizzleInterfaceGroup(AS_NSWindow_CornerRadius, NSWindow, NSWindow, APPLE_SHARPENER)
 @implementation AS_NSWindow_CornerRadius
+
+- (BOOL)hasShadow {
+    if (removeShadows && isStandardAppWindow(self)) {
+        return NO;
+    }
+    return ZKOrig(BOOL);
+}
+
+- (void)setHasShadow:(BOOL)hasShadow {
+    if (removeShadows && isStandardAppWindow(self)) {
+        ZKOrig(void, NO);
+    } else {
+        ZKOrig(void, hasShadow);
+    }
+}
 
 - (void)setFrame:(NSRect)frameRect display:(BOOL)flag {
 #pragma clang diagnostic push
@@ -207,31 +256,6 @@ static void setupWindowNotifications(void) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wcast-function-type-mismatch"
     ZKOrig(void, sender);
-#pragma clang diagnostic pop
-}
-
-@end
-
-#pragma mark - Swizzled Titlebar Decoration View
-
-ZKSwizzleInterfaceGroup(AS_TitlebarDecorationView, _NSTitlebarDecorationView, NSView, APPLE_SHARPENER)
-@implementation AS_TitlebarDecorationView
-
-- (void)viewDidMoveToWindow {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wcast-function-type-mismatch"
-    ZKOrig(void);
-#pragma clang diagnostic pop
-}
-
-- (void)drawRect:(NSRect)dirtyRect {
-    if (enableSharpener && isStandardAppWindow(self.window)) {
-        return;  // Suppress drawing when sharpener is enabled to ensure corners remain sharp
-    }
-    
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wcast-function-type-mismatch"
-    ZKOrig(void, dirtyRect);
 #pragma clang diagnostic pop
 }
 
