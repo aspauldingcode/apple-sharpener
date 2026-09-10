@@ -1,3 +1,11 @@
+/**
+ * Apple Sharpener: Dock Sharpening Implementation
+ *
+ * Implements the logic to find the Dock bar's backdrop layer and apply
+ * custom corner radii and borders. It uses a method swizzle on 
+ * CALayer's layoutSublayers to detect the Dock bar dynamically.
+ */
+
 #import "dock.h"
 #import "sharpener_log.h"
 #import <AppKit/AppKit.h>
@@ -6,6 +14,9 @@
 #import <objc/runtime.h>
 
 NSString *const kDockBundleIdentifier = @"com.apple.dock";
+
+/// Dock layer is only stable up to this radius; global/windows may go to 100.
+static const NSInteger kSharpenerDockRadiusMaximum = 46;
 
 static BOOL enableDockSharpener = YES;
 static NSInteger dockCustomRadius = 0;
@@ -65,6 +76,22 @@ static void ASStyleDockBackdrop(CALayer *layer) {
   [CATransaction commit];
 }
 
+/// Undo dock bar tweaks so Dock can fall back to system drawing (module off).
+static void ASRestoreDefaultDockBackdrop(CALayer *layer) {
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  layer.cornerRadius = 0;
+  layer.masksToBounds = NO;
+  layer.borderWidth = 0;
+  layer.borderColor = NULL;
+  [layer setNeedsDisplay];
+  [layer displayIfNeeded];
+  id c = layer.contents;
+  layer.contents = nil;
+  layer.contents = c;
+  [CATransaction commit];
+}
+
 static IMP __LayoutSublayers = NULL;
 
 static void _PatchedLayoutSublayers(id self, SEL _cmd) {
@@ -97,7 +124,7 @@ static void _PatchedLayoutSublayers(id self, SEL _cmd) {
   ASStyleDockBackdrop(layer);
 }
 
-static void ASWalkDockLayersForRefresh(CALayer *root) {
+static void ASWalkDockLayersApplyOrRestore(CALayer *root, BOOL sharpeningOn) {
   NSMutableArray<CALayer *> *q = [NSMutableArray arrayWithObject:root];
   while (q.count) {
     CALayer *ly = q.firstObject;
@@ -105,8 +132,16 @@ static void ASWalkDockLayersForRefresh(CALayer *root) {
     [ly setNeedsLayout];
     [ly layoutIfNeeded];
     if ([[ly className] isEqualToString:@"CASDFElementLayer"] &&
-        isDockBarLayer(ly))
-      ASStyleDockBackdrop(ly);
+        isDockBarLayer(ly)) {
+      if (sharpeningOn) {
+        // Clear stale state, then re-apply persisted radius/borders (menubar
+        // toggle / modules.update parity with window module).
+        ASRestoreDefaultDockBackdrop(ly);
+        ASStyleDockBackdrop(ly);
+      } else {
+        ASRestoreDefaultDockBackdrop(ly);
+      }
+    }
     for (CALayer *sl in ly.sublayers)
       [q addObject:sl];
   }
@@ -122,7 +157,7 @@ void toggleDockCorners(BOOL enable, NSInteger radius) {
       CALayer *root = w.contentView.layer;
       if (!root)
         continue;
-      ASWalkDockLayersForRefresh(root);
+      ASWalkDockLayersApplyOrRestore(root, enable);
       [w invalidateShadow];
       [w displayIfNeeded];
     }
@@ -130,32 +165,73 @@ void toggleDockCorners(BOOL enable, NSInteger radius) {
   }
 }
 
-static void refreshDockSettings(void) {
-  NSUserDefaults *std = NSUserDefaults.standardUserDefaults;
-  [std synchronize];
+static id ASGetDockPref(NSString *suffix) {
+  if (!suffix) return nil;
+  NSString *key = [NSString stringWithFormat:@"AppleSharpener_%@", suffix];
+  
+  // 1. Check Global Domain (prefixed)
+  id v = (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key, kCFPreferencesAnyApplication);
+  if (v && v != (id)[NSNull null]) return v;
+  
+  // 2. Check Suite Domain (prefixed)
+  v = (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.aspauldingcode.apple_sharpener"));
+  if (v && v != (id)[NSNull null]) return v;
 
-  id (^get)(NSString *, NSString *) = ^id(NSString *mod, NSString *fallback) {
-    id v = mod ? [std objectForKey:[NSString stringWithFormat:@"AppleSharpener_%@", mod]] : nil;
-    if (v && v != (id)[NSNull null])
-      return v;
-    v = fallback ? [std objectForKey:[NSString stringWithFormat:@"AppleSharpener_%@", fallback]]
-                 : nil;
-    return (v && v != (id)[NSNull null]) ? v : nil;
-  };
+  // 3. Check Suite Domain (unprefixed) - Direct CLI writes
+  v = (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)suffix, CFSTR("com.aspauldingcode.apple_sharpener"));
+  if (v && v != (id)[NSNull null]) return v;
+
+  return nil;
+}
+
+static void refreshDockSettings(void) {
+  id gEn = ASGetDockPref(@"enabled");
+  BOOL masterEnabled = (gEn == nil) || [gEn boolValue];
+
+  id dockEn = ASGetDockPref(@"dock_enabled");
+  if (dockEn != nil) {
+    enableDockSharpener = masterEnabled && [dockEn boolValue];
+  } else {
+    enableDockSharpener = masterEnabled;
+  }
+  
+  NSLog(@"[AppleSharpener] refreshDockSettings: master=%d, dock=%d", masterEnabled, enableDockSharpener);
+
+  if (!enableDockSharpener) {
+    // Module off: never inherit global radius/borders — that re-applied global
+    // sharpening and looked like "dock still follows global."
+    id dr = ASGetDockPref(@"dock_radius");
+    dockCustomRadius = dr ? [dr integerValue] : 0;
+    dockBordersEnabled = NO;
+    dockBorderWidth = 1.0;
+    dockBorderHexPaint = nil;
+    return;
+  }
+
+  id dockRadVal = ASGetDockPref(@"dock_radius");
+  id globalRadVal = ASGetDockPref(@"radius");
+  if (dockRadVal != nil) {
+    NSInteger r = MAX(0, [dockRadVal integerValue]);
+    dockCustomRadius = MIN(r, kSharpenerDockRadiusMaximum);
+  } else if (globalRadVal != nil) {
+    NSInteger g = MAX(0, [globalRadVal integerValue]);
+    dockCustomRadius = MIN(g, kSharpenerDockRadiusMaximum);
+  }
 
   id val;
-  if ((val = get(@"dock_enabled", @"enabled")))
-    enableDockSharpener = [val boolValue];
-  if ((val = get(@"dock_radius", @"radius")))
-    dockCustomRadius = [val integerValue];
+  id (^ASResolve)(NSString *, NSString *) = ^id(NSString *mod, NSString *glob) {
+    id v = ASGetDockPref(mod);
+    if (v) return v;
+    return ASGetDockPref(glob);
+  };
 
-  if ((val = get(@"dock_borders", @"global_borders")))
+  if ((val = ASResolve(@"dock_borders", @"global_borders")))
     dockBordersEnabled = [val boolValue];
-  if ((val = get(@"dock_border_width", @"global_border_width")))
+  if ((val = ASResolve(@"dock_border_width", @"global_border_width")))
     dockBorderWidth = [val doubleValue];
 
   NSString *hex = nil;
-  if ((val = get(@"dock_border_color_active", @"global_border_color_active")))
+  if ((val = ASResolve(@"dock_border_color_active", @"global_border_color_active")))
     hex = [val isKindOfClass:[NSString class]] ? val : nil;
   if (dockBordersEnabled && !hex.length)
     hex = @"0xFF808080";

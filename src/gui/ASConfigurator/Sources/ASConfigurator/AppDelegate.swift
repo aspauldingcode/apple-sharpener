@@ -1,3 +1,10 @@
+/**
+ * Apple Sharpener: Configurator App Delegate
+ *
+ * Manages the application lifecycle, window management, and menu item
+ * integration for the ASConfigurator GUI.
+ */
+
 import AppKit
 import SwiftUI
 
@@ -46,8 +53,11 @@ private final class QuickToggleMenuRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:)") }
 
     override var intrinsicContentSize: NSSize {
-        let h = max(26, stack.fittingSize.height)
-        return NSSize(width: 272, height: h)
+        stack.layoutSubtreeIfNeeded()
+        let fit = stack.fittingSize
+        let w = ceil(fit.width)
+        let h = max(26, ceil(fit.height))
+        return NSSize(width: w, height: h)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -69,13 +79,13 @@ class AppMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var windowsSwitch: NSSwitch!
     private var dockSwitch: NSSwitch!
-    private var squircleSwitch: NSSwitch!
 
     /// Avoid treating programmatic state updates as user edits.
     private var isSyncingQuickToggleSwitches = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        installMainMenu()
 
         // ── Menu bar icon ──────────────────────────────────────────
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -96,17 +106,14 @@ class AppMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let toggleParent = NSMenuItem(title: "Quick Toggles", action: nil, keyEquivalent: "")
         let sub = NSMenu()
         sub.delegate = self
-        sub.minimumWidth = 280
 
         windowsSwitch = addQuickToggle(to: sub, title: "Windows Module",
                                        isOn: cfg.windows.enabled,
                                        action: #selector(windowsSwitchChanged(_:)))
+        sub.addItem(.separator())
         dockSwitch = addQuickToggle(to: sub, title: "Dock Module",
                                     isOn: cfg.dock.enabled,
                                     action: #selector(dockSwitchChanged(_:)))
-        squircleSwitch = addQuickToggle(to: sub, title: "Squircle Corners",
-                                        isOn: cfg.globalSquircle,
-                                        action: #selector(squircleSwitchChanged(_:)))
 
         toggleParent.submenu = sub
         menu.addItem(toggleParent)
@@ -128,8 +135,39 @@ class AppMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // ── Configurator panel (created once, never released) ──────
         buildPanel()
 
-        // Enable sharpener on launch
+        // Enable sharpener on launch (UserDefaults + CF prefs + notify; does not write config.kdl).
         cli("on")
+    }
+
+    /// Accessory apps have no default Edit menu; without it, ⌘C / ⌘X / ⌘V never reach `NSTextView`.
+    private func installMainMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        let quitTitle = "Quit \(ProcessInfo.processInfo.processName)"
+        appMenu.addItem(NSMenuItem(title: quitTitle,
+                                   action: #selector(NSApplication.terminate(_:)),
+                                   keyEquivalent: "q"))
+
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        main.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editItem.submenu = editMenu
+
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+
+        NSApp.mainMenu = main
     }
 
     private func addQuickToggle(to sub: NSMenu, title: String, isOn: Bool, action: Selector) -> NSSwitch {
@@ -176,15 +214,22 @@ class AppMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Menu delegate
     func menuNeedsUpdate(_ menu: NSMenu) {
-        guard windowsSwitch != nil, dockSwitch != nil, squircleSwitch != nil else { return }
+        guard windowsSwitch != nil, dockSwitch != nil else { return }
 
-        let cfg = SharpenerConfig.load()
+        let cfg: SharpenerConfig
+        switch SharpenerConfig.read() {
+        case .ok(let c):
+            cfg = c
+        case .fileMissing:
+            cfg = SharpenerConfig()
+        case .invalidDocument:
+            return
+        }
         isSyncingQuickToggleSwitches = true
         defer { isSyncingQuickToggleSwitches = false }
 
         windowsSwitch.state = cfg.windows.enabled ? .on : .off
         dockSwitch.state = cfg.dock.enabled ? .on : .off
-        squircleSwitch.state = cfg.globalSquircle ? .on : .off
     }
 
     // MARK: - CLI helpers
@@ -212,7 +257,11 @@ class AppMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func applyQuickToggle(apply: (ConfigModel) -> Void) {
         guard !isSyncingQuickToggleSwitches else { return }
         let model = ConfigModel()
-        model.reload()
+        guard model.reload() else {
+            NSLog("ASConfigurator: quick toggle skipped — \(SharpenerConfig.configPath) is unreadable or invalid")
+            NSSound.beep()
+            return
+        }
         apply(model)
         model.save()
     }
@@ -225,11 +274,6 @@ class AppMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func dockSwitchChanged(_ sender: NSSwitch) {
         let on = (sender.state == .on)
         applyQuickToggle { $0.dockEnabled = on }
-    }
-
-    @objc func squircleSwitchChanged(_ sender: NSSwitch) {
-        let on = (sender.state == .on)
-        applyQuickToggle { $0.globalSquircle = on }
     }
 
     @objc func showAbout() {

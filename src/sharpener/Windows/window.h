@@ -1,3 +1,10 @@
+/**
+ * Apple Sharpener: Window Sharpening API
+ *
+ * Defines the public interface for the Window sharpening module, including
+ * initialization and toggle functions.
+ */
+
 #ifndef WINDOW_H
 #define WINDOW_H
 

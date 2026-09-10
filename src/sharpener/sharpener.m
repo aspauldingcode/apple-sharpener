@@ -1,3 +1,11 @@
+/**
+ * Apple Sharpener: Main Coordinator
+ *
+ * This file serves as the primary entry point for the Apple Sharpener dylib.
+ * It uses a dyld image handler to detect when AppKit is loaded in a process
+ * and coordinates the initialization of the Windows and Dock sharpening modules.
+ */
+
 #import "Dock/dock.h"
 #import "Windows/window.h"
 #import "proc_utils.h"
@@ -38,22 +46,27 @@ static BOOL appkitDetected = NO;
 
 static void onImageLoaded(const struct mach_header *mh, intptr_t slide) {
   (void)slide;
+  // If we already initialized, don't do it again
   if (appkitDetected)
     return;
 
   Dl_info info;
+  // Use dladdr to find the path of the loaded image
   if (dladdr(mh, &info) && info.dli_fname) {
+    // We only care if AppKit was just loaded
     if (strstr(info.dli_fname, "AppKit.framework") == NULL)
       return;
 
     appkitDetected = YES;
 
+    // Last minute check to avoid injecting into background helpers
     if (sharpener_is_extension_process()) {
       SHARPENER_LOG(@"Skipping init — extension/helper process");
       return;
     }
 
     SHARPENER_LOG(@"AppKit loaded — scheduling sharpener init");
+    // Initialize on the main queue to ensure AppKit classes are fully ready
     dispatch_async(dispatch_get_main_queue(), ^{
       if (isDockProcess()) {
         SHARPENER_LOG(@"init dock hooks");
@@ -78,6 +91,7 @@ __attribute__((constructor)) static void sharpener_appkit_guard(void) {
   if (sharpener_is_extension_process())
     return;
 
+  NSLog(@"[AppleSharpener] libapple_sharpener loaded, registering AppKit hook");
   _dyld_register_func_for_add_image(onImageLoaded);
 }
 

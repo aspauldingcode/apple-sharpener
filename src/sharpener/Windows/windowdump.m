@@ -1,3 +1,10 @@
+/**
+ * Apple Sharpener: Window Layer Dumper
+ *
+ * A utility to dump the view and layer hierarchy of the current application
+ * to a file for debugging purposes. Used via `make dumpwindow`.
+ */
+
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>

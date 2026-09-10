@@ -1,3 +1,9 @@
+/**
+ * Apple Sharpener: Dock Sharpening API
+ *
+ * Defines the public interface for modifying the Dock's appearance.
+ */
+
 #ifndef DOCK_H
 #define DOCK_H
 

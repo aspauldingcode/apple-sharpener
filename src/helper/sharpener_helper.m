@@ -1,9 +1,35 @@
+/**
+ * Apple Sharpener: Background Helper Daemon
+ *
+ * This daemon watches the ~/.config/sharpener/config.kdl file and 
+ * synchronizes its contents with the NSUserDefaults suite and global 
+ * CFPreferences. It also broadcasts system-wide notifications when 
+ * settings change.
+ */
+
 #import <Foundation/Foundation.h>
 #import "sharpener_log.h"
 #import <notify.h>
 #include <sys/event.h>
 #import <sys/stat.h>
 #include <sys/time.h>
+
+// Match `clitool.m` / ASConfigurator `SharpenerConfig.RadiusLimit`.
+static inline NSInteger ASClampRadiusWindows(NSInteger v) {
+  if (v < 0)
+    return 0;
+  if (v > 100)
+    return 100;
+  return v;
+}
+
+static inline NSInteger ASClampRadiusDock(NSInteger v) {
+  if (v < 0)
+    return 0;
+  if (v > 46)
+    return 46;
+  return v;
+}
 
 @interface ASConfigHelper : NSObject {
   dispatch_source_t _watcher;
@@ -139,7 +165,9 @@
   if (globalBlock) {
     NSString *r = extractVal(@"radius", globalBlock);
     if (r)
-      gRad = [r integerValue];
+      gRad = ASClampRadiusWindows([r integerValue]);
+    else
+      gRad = ASClampRadiusWindows(gRad);
     NSString *sq = extractVal(@"squircle", globalBlock);
     if (sq)
       gSq = [sq isEqualToString:@"true"];
@@ -165,8 +193,8 @@
                forKey:@"windows_enabled"];
 
     NSString *r = extractVal(@"radius", windowsBlock);
-    [defaults setInteger:(r ? [r integerValue] : gRad)
-                  forKey:@"windows_radius"];
+    NSInteger winR = r ? ASClampRadiusWindows([r integerValue]) : gRad;
+    [defaults setInteger:winR forKey:@"windows_radius"];
 
     NSString *sq = extractVal(@"squircle", windowsBlock);
     [defaults setBool:(sq ? [sq isEqualToString:@"true"] : gSq)
@@ -218,8 +246,9 @@
     [defaults setBool:(en ? [en isEqualToString:@"true"] : YES)
                forKey:@"dock_enabled"];
     NSString *r = extractVal(@"radius", dockBlock);
-    [defaults setInteger:(r ? [r integerValue] : (gRad > 46 ? 46 : gRad))
-                  forKey:@"dock_radius"];
+    NSInteger dockR =
+        r ? ASClampRadiusDock([r integerValue]) : ASClampRadiusDock(MIN(gRad, 46));
+    [defaults setInteger:dockR forKey:@"dock_radius"];
     needsUpdateDock = YES;
   }
 
@@ -262,7 +291,7 @@
 
       NSString *r = extractVal(@"radius", appBlock);
       if (r)
-        ruleDict[@"radius"] = @([r integerValue]);
+        ruleDict[@"radius"] = @(ASClampRadiusWindows([r integerValue]));
       NSString *sq = extractVal(@"squircle", appBlock);
       if (sq)
         ruleDict[@"squircle"] = @([sq isEqualToString:@"true"]);
@@ -292,6 +321,12 @@
     }
     [defaults setObject:rulesArray forKey:@"rules"];
     needsUpdateWindows = YES;
+  }
+
+  // Root `sharpener.enabled=false` == CLI `sharpener off`: master must override
+  // module keys (dylib consults windows_enabled/dock_enabled first).
+  if (rootEn && ![rootEn isEqualToString:@"true"]) {
+    notify_post("com.aspauldingcode.apple_sharpener.disable");
   }
 
   [defaults synchronize];

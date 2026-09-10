@@ -1,3 +1,10 @@
+/**
+ * Apple Sharpener: Dock Layer Dumper
+ *
+ * A utility to dump the Dock's view and layer hierarchy for debugging 
+ * purposes. Used via `make dumpdock`.
+ */
+
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>

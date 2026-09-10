@@ -1,3 +1,11 @@
+/**
+ * Apple Sharpener: Process Utilities
+ *
+ * Provides inline helpers to identify specific process types (Chromium, 
+ * System Settings extensions, etc.) and determine if the current process 
+ * should be modified by the sharpener.
+ */
+
 #ifndef SHARPENER_PROC_UTILS_H
 #define SHARPENER_PROC_UTILS_H
 
@@ -178,7 +186,9 @@ static inline BOOL sharpener_is_chromium_helper_process(void) {
 
 /**
  * Returns YES only when this process executable lives under
- * `Something.app/Contents/MacOS/...` (normal GUI apps, Dock, menu bar apps).
+ * `Something.app/Contents/MacOS/...` (normal GUI apps, Dock, menubar `.app` agents).
+ * Bare binaries (e.g. `/usr/local/bin/sharpener-configurator`) return NO so the
+ * dylib does not register AppKit hooks in helper tools.
  *
  * Returns NO for compilers, CLI tools, scripting runtimes, and for
  * `.appex`, `.xpc`, and `XPCServices` bundles even though some link AppKit.

@@ -39,8 +39,8 @@ sharpener --version
 
 ### Global Commands
 - `on` — Enable sharpening for both windows and dock
-- `off` — Disable sharpening for both windows and dock
-- `toggle` — Toggle sharpening on/off for both windows and dock
+- `off` — Disable sharpening for windows, dock, and squircle (continuous corners)
+- `toggle` — Toggle sharpening on/off for windows and dock; when turning **off**, squircle is also disabled (`sharpener -q on` to re-enable corners)
 
 ### Windows-Specific Commands
 - `-w on` — Enable window sharpening only
@@ -115,7 +115,7 @@ sharpener --version
 ### Enable/Disable Priority
 - **Windows-specific toggle** (`-w on/off/toggle`) controls windows independently of dock
 - **Dock-specific toggle** (`-d on/off/toggle`) controls dock independently of windows
-- **Global toggle** (`on/off/toggle`) affects both windows and dock
+- **Global toggle** (`on/off/toggle`) affects both windows and dock; **`off`** and the disable half of **`toggle`** also turn **squircle** off. Global **`on`** does not change squircle (use `-q on` to enable corners again).
 - If windows/dock is explicitly disabled, it remains disabled even if global is enabled
 
 ### Window Targeting

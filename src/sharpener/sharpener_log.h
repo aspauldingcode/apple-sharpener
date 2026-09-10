@@ -1,3 +1,11 @@
+/**
+ * Apple Sharpener: Logging System
+ *
+ * Defines the SHARPENER_LOG macro and associated file-logging functions.
+ * Building with -DAPPLE_SHARPENER_LOGS enables persistent logging to:
+ * ~/Library/Logs/AppleSharpener/sharpener.log
+ */
+
 #pragma once
 
 #import <Foundation/Foundation.h>

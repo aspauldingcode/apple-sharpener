@@ -1,3 +1,10 @@
+/**
+ * Apple Sharpener: Configurator Main View
+ *
+ * Provides the SwiftUI-based user interface for adjusting sharpening
+ * parameters, managing app rules, and toggling module states.
+ */
+
 import SwiftUI
 import AppKit
 import KDL
@@ -20,7 +27,13 @@ struct ConfiguratorView: View {
             // ── Toolbar ─────────────────────────────────────────────
             HStack(spacing: 4) {
                 ForEach(ConfigTab.allCases, id: \.self) { t in
-                    Button(action: { withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { tab = t } }) {
+                    Button(action: { 
+                        if tab == .editor && t != .editor {
+                            // Committing when leaving the editor tab
+                            model.commitFormattedKDL()
+                        }
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { tab = t } 
+                    }) {
                         HStack(spacing: 6) {
                             Image(systemName: t.icon)
                             Text(t.rawValue)
@@ -33,7 +46,17 @@ struct ConfiguratorView: View {
                     .buttonStyle(GlassToolbarButtonStyle(isSelected: tab == t))
                 }
                 Spacer()
-                Toggle("", isOn: $model.enabled).toggleStyle(.switch).labelsHidden()
+                Toggle("", isOn: Binding(
+                    get: { model.enabled },
+                    set: { newValue in
+                        // If we are switching the master toggle, ensure any pending KDL edits are flushed first
+                        if tab == .editor { model.commitFormattedKDL() }
+                        model.enabled = newValue
+                        model.save()
+                    }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -46,16 +69,17 @@ struct ConfiguratorView: View {
                 if tab == .settings {
                     SettingsTabView(model: model)
                 } else {
-                    KDLEditorView(model: model, delegate: delegate)
+                    KDLEditorView(model: model)
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: tab)
         }
         .frame(width: 560)
         .background(Color(NSColor.windowBackgroundColor))
-        .onAppear { 
-            model.reload()
-            model.save() // Sync KDL to UserDefaults suites on startup
+        .onAppear {
+            if model.reload() {
+                model.syncRuntimeMirrors()
+            }
         }
     }
 }
@@ -112,7 +136,6 @@ struct SettingsTabView: View {
                 }
             }
             .padding(20)
-            .onChange(of: model.enabled) { model.save() }
         }
     }
 }
@@ -121,7 +144,17 @@ struct GlobalSection: View {
     @ObservedObject var model: ConfigModel
     var body: some View {
         SettingsSection(title: "Global / Common") {
-            GlobalTriStateSliderRow(label: "Corner Radius", value: $model.globalRadius, range: 0...100, format: "%d")
+            SliderRow(
+                label: "Corner Radius",
+                sub: "Globally affects both Dock and Windows",
+                value: Binding(
+                    get: { model.globalRadius ?? 14 },
+                    set: { model.globalRadius = $0 }
+                ),
+                range: 0...100,
+                format: "%d",
+                disableValue: 0
+            )
             Divider()
             ToggleRow(label: "Squircle Curvature", sub: "Square + circle (squircle) curvature", value: $model.globalSquircle)
             if model.globalSquircle {
@@ -139,14 +172,14 @@ struct GlobalSection: View {
             Divider()
             ColorRow(label: "Inactive Border Color", hexString: $model.globalBorderColorInactive)
         }
-        .onChange(of: model.globalRadius) { model.save() }
-        .onChange(of: model.globalSquircle) { model.save() }
-        .onChange(of: model.globalSquircleExponent) { model.save() }
-        .onChange(of: model.globalShadows) { model.save() }
-        .onChange(of: model.globalBorders) { model.save() }
-        .onChange(of: model.globalBorderWidth) { model.save() }
-        .onChange(of: model.globalBorderColorActive) { model.save() }
-        .onChange(of: model.globalBorderColorInactive) { model.save() }
+        .onChange(of: model.globalRadius) { _, _ in model.saveDebounced() }
+        .onChange(of: model.globalSquircle) { _, _ in model.save() }
+        .onChange(of: model.globalSquircleExponent) { _, _ in model.saveDebounced() }
+        .onChange(of: model.globalShadows) { _, _ in model.save() }
+        .onChange(of: model.globalBorders) { _, _ in model.save() }
+        .onChange(of: model.globalBorderWidth) { _, _ in model.saveDebounced() }
+        .onChange(of: model.globalBorderColorActive) { _, _ in model.saveDebounced() }
+        .onChange(of: model.globalBorderColorInactive) { _, _ in model.saveDebounced() }
     }
 }
 
@@ -154,7 +187,7 @@ struct WindowsSection: View {
     @ObservedObject var model: ConfigModel
     var body: some View {
         SettingsSection(title: "Windows Module") {
-            ToggleRow(label: "Enable Window Sharpening", value: $model.windowsEnabled)
+            ToggleRow(label: "Window Sharpening", value: $model.windowsEnabled)
             if model.windowsEnabled {
                 Divider()
                 WindowModuleCoreSettings(model: model)
@@ -163,13 +196,15 @@ struct WindowsSection: View {
                 ToolbarSettings(model: model)
             }
         }
-        .onChange(of: model.windowsEnabled) { model.save() }
-        .onChange(of: model.windowsRadius) { model.save() }
-        .onChange(of: model.windowsSquircle) { model.save() }
-        .onChange(of: model.windowsSquircleExponent) { model.save() }
-        .onChange(of: model.windowsShadows) { model.save() }
-        .onChange(of: model.windowsBorders) { model.save() }
-        .onChange(of: model.windowsBorderWidth) { model.save() }
+        .onChange(of: model.windowsEnabled) { _, _ in model.save() }
+        .onChange(of: model.windowsRadius) { _, _ in model.saveDebounced() }
+        .onChange(of: model.windowsSquircle) { _, _ in model.save() }
+        .onChange(of: model.windowsSquircleExponent) { _, _ in model.saveDebounced() }
+        .onChange(of: model.windowsShadows) { _, _ in model.save() }
+        .onChange(of: model.windowsBorders) { _, _ in model.save() }
+        .onChange(of: model.windowsBorderWidth) { _, _ in model.saveDebounced() }
+        .onChange(of: model.windowsBorderColorActive) { _, _ in model.saveDebounced() }
+        .onChange(of: model.windowsBorderColorInactive) { _, _ in model.saveDebounced() }
     }
 }
 
@@ -179,15 +214,15 @@ struct WindowModuleCoreSettings: View {
         Group {
             TriStateSliderRow(label: "Window Radius", value: $model.windowsRadius, range: 0...100, format: "%d")
             Divider()
-            TriStateRow(label: "Window Squircle", value: $model.windowsSquircle)
+            TriStateRow(label: "Window Squircle", value: $model.windowsSquircle, inheritSource: model.globalSquircle)
             if model.windowsSquircle == true {
                 Divider()
                 TriStateSliderRow(label: "Squircle Exponent", value: $model.windowsSquircleExponent, range: 1.0...6.0, format: "%.1f")
             }
             Divider()
-            TriStateRow(label: "Window Shadows", value: $model.windowsShadows)
+            TriStateRow(label: "Window Shadows", value: $model.windowsShadows, inheritSource: model.globalShadows)
             Divider()
-            TriStateRow(label: "Window Borders", value: $model.windowsBorders)
+            TriStateRow(label: "Window Borders", value: $model.windowsBorders, inheritSource: model.globalBorders)
             if model.windowsBorders == true {
                 TriStateSliderRow(label: "Border Width", value: $model.windowsBorderWidth, range: 1...12, format: "%.1f")
                 Divider()
@@ -207,7 +242,7 @@ struct TrafficLightSettings: View {
             StringTriStateRow(label: "Traffic Lights", sub: "Square or Default macOS dots", value: $model.trafficLightsMode, showInherit: false)
                 .background(Color.black.opacity(0.05))
         }
-        .onChange(of: model.trafficLightsMode) { model.save() }
+        .onChange(of: model.trafficLightsMode) { _, _ in model.save() }
     }
 }
 
@@ -219,7 +254,7 @@ struct SidebarSettings: View {
             StringTriStateRow(label: "Sidebars", sub: "Apply square corners to Sidebars", value: $model.sidebarMode, showInherit: false)
                 .background(Color.black.opacity(0.05))
         }
-        .onChange(of: model.sidebarMode) { model.save() }
+        .onChange(of: model.sidebarMode) { _, _ in model.save() }
     }
 }
 
@@ -231,7 +266,7 @@ struct ToolbarSettings: View {
             StringTriStateRow(label: "Toolbars", sub: "Apply square corners to Toolbars", value: $model.toolbarMode, showInherit: false)
                 .background(Color.black.opacity(0.05))
         }
-        .onChange(of: model.toolbarMode) { model.save() }
+        .onChange(of: model.toolbarMode) { _, _ in model.save() }
     }
 }
 
@@ -239,14 +274,14 @@ struct DockSection: View {
     @ObservedObject var model: ConfigModel
     var body: some View {
         SettingsSection(title: "Dock Module") {
-            ToggleRow(label: "Enable Dock Sharpening", value: $model.dockEnabled)
+            ToggleRow(label: "Dock Sharpening", value: $model.dockEnabled)
             if model.dockEnabled {
                 Divider()
-                TriStateSliderRow(label: "Dock Radius", value: $model.dockRadius, range: 0...120, format: "%d")
+                TriStateSliderRow(label: "Dock Radius", value: $model.dockRadius, range: 0...46, format: "%d")
                 Divider()
-                TriStateRow(label: "Dock Squircle", value: $model.dockSquircle)
+                TriStateRow(label: "Dock Squircle", value: $model.dockSquircle, inheritSource: model.globalSquircle)
                 Divider()
-                TriStateRow(label: "Dock Borders", value: $model.dockBorders)
+                TriStateRow(label: "Dock Borders", value: $model.dockBorders, inheritSource: model.globalBorders)
                 if model.dockBorders == true {
                     TriStateSliderRow(label: "Border Width", value: $model.dockBorderWidth, range: 1...12, format: "%.1f")
                     Divider()
@@ -256,14 +291,20 @@ struct DockSection: View {
                 }
             }
         }
-        .onChange(of: model.dockEnabled) { model.save() }
-        .onChange(of: model.dockRadius) { model.save() }
-        .onChange(of: model.dockSquircle) { model.save() }
+        .onChange(of: model.dockEnabled) { _, _ in model.save() }
+        .onChange(of: model.dockRadius) { _, _ in model.saveDebounced() }
+        .onChange(of: model.dockSquircle) { _, _ in model.save() }
+        .onChange(of: model.dockBorders) { _, _ in model.save() }
+        .onChange(of: model.dockBorderWidth) { _, _ in model.saveDebounced() }
+        .onChange(of: model.dockBorderColorActive) { _, _ in model.saveDebounced() }
+        .onChange(of: model.dockBorderColorInactive) { _, _ in model.saveDebounced() }
     }
 }
 
 struct AppRulesSection: View {
     @ObservedObject var model: ConfigModel
+    @State private var showAddAppPicker = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("PER-APP OVERRIDES (WINDOWS)").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
@@ -273,26 +314,18 @@ struct AppRulesSection: View {
                         model.rules.remove(at: idx); model.save()
                     }
                 })
-                .onChange(of: rule) { model.save() }
+                .onChange(of: rule) { _, _ in model.saveDebounced() }
             }
-            
-            Button(action: addRule) {
+
+            Button(action: { showAddAppPicker = true }) {
                 Label("Add Rule", systemImage: "plus.circle")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassFallback)
         }
         .padding(.horizontal, 4)
-    }
-
-    private func addRule() {
-        let alert = NSAlert()
-        alert.messageText = "New App Rule"; alert.informativeText = "Enter Bundle ID or App Name"
-        let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        alert.accessoryView = f; alert.addButton(withTitle: "Add"); alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
-            let id = f.stringValue.trimmingCharacters(in: .whitespaces)
-            if !id.isEmpty { model.rules.append(AppRuleModel(bundleId: id)); model.save() }
+        .sheet(isPresented: $showAddAppPicker) {
+            AddAppRuleSheet(model: model)
         }
     }
 }
@@ -354,14 +387,49 @@ struct ToggleRow: View {
 }
 
 struct SliderRow: View {
-    let label: String; var sub: String? = nil; @Binding var value: Double; let range: ClosedRange<Double>; let format: String; var disableValue: Double? = nil
-    init(label: String, sub: String? = nil, value: Binding<Double>, range: ClosedRange<Double>, format: String, disableValue: Double? = nil) { 
-        self.label = label; self.sub = sub; self._value = value; self.range = range; self.format = format; self.disableValue = disableValue 
+    let label: String
+    var sub: String? = nil
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let format: String
+    var disableValue: Double? = nil
+    /// When true, slider snaps to integers and the label uses `format` with a rounded Int (never pass Doubles to `%d`.)
+    private var integerStepping: Bool = false
+
+    init(label: String, sub: String? = nil, value: Binding<Double>, range: ClosedRange<Double>, format: String, disableValue: Double? = nil) {
+        self.label = label
+        self.sub = sub
+        self._value = value
+        self.range = range
+        self.format = format
+        self.disableValue = disableValue
+        self.integerStepping = false
     }
     init(label: String, sub: String? = nil, value: Binding<Int>, range: ClosedRange<Double>, format: String, disableValue: Int? = nil) {
-        self.label = label; self.sub = sub; self.range = range; self.format = format; self.disableValue = disableValue.map { Double($0) }
-        self._value = Binding(get: { Double(value.wrappedValue) }, set: { value.wrappedValue = Int($0) })
+        self.label = label
+        self.sub = sub
+        self.range = range
+        self.format = format
+        self.disableValue = disableValue.map { Double($0) }
+        self.integerStepping = true
+        let lo = Int(range.lowerBound.rounded())
+        let hi = Int(range.upperBound.rounded())
+        self._value = Binding(
+            get: { Double(value.wrappedValue) },
+            set: { new in
+                let i = Int(new.rounded())
+                value.wrappedValue = max(lo, min(hi, i))
+            }
+        )
     }
+
+    private var valueLabel: String {
+        if integerStepping {
+            return String(format: format, Int(value.rounded()))
+        }
+        return String(format: format, value)
+    }
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 0) {
@@ -370,11 +438,14 @@ struct SliderRow: View {
             }
             Spacer()
             HStack(spacing: 8) {
-                Text(String(format: format, value)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).frame(width: 32, alignment: .trailing)
+                Text(valueLabel)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 34, alignment: .trailing)
                 Slider(value: $value, in: range).frame(width: 100)
                 if let dVal = disableValue {
-                    Button(action: { value = dVal }) { 
-                        Image(systemName: "arrow.uturn.backward.circle.fill").foregroundStyle(.secondary) 
+                    Button(action: { value = dVal }) {
+                        Image(systemName: "arrow.uturn.backward.circle.fill").foregroundStyle(.secondary)
                     }.buttonStyle(.plain)
                 }
             }
@@ -383,15 +454,45 @@ struct SliderRow: View {
     }
 }
 
+/// Optional bool: `nil` = omit from config (inherit globally). Matches tri-slider UX: Customize → edit → reset to inherit.
 struct TriStateRow: View {
-    let label: String; @Binding var value: Bool?
+    let label: String
+    var sub: String? = nil
+    @Binding var value: Bool?
+    /// Value used when the user taps **Customize** (usually the current global setting).
+    var inheritSource: Bool = true
+
     var body: some View {
-        HStack {
-            Text(label).font(.system(size: 13, weight: .medium)); Spacer()
-            Picker("", selection: Binding(get: { value == nil ? 0 : (value! ? 1 : 2) }, set: { v in value = v == 0 ? nil : v == 1 })) {
-                Text("Inherit").tag(0); Text("On").tag(1); Text("Off").tag(2)
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(label).font(.system(size: 13, weight: .medium))
+                if let s = sub { Text(s).font(.system(size: 11)).foregroundStyle(.secondary) }
+                if value == nil {
+                    Text("Inheriting").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
             }
-            .pickerStyle(.segmented).frame(width: 160).labelsHidden()
+            Spacer()
+            if value != nil {
+                HStack(spacing: 8) {
+                    Toggle("", isOn: Binding(
+                        get: { value! },
+                        set: { value = $0 }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    Button(action: { value = nil }) {
+                        Image(systemName: "arrow.uturn.backward.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                Button(action: { value = inheritSource }) {
+                    Text("Customize").font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.blue.opacity(0.15), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
@@ -421,12 +522,44 @@ struct StringTriStateRow: View {
 }
 
 struct TriStateSliderRow: View {
-    let label: String; @Binding var value: Double?; let range: ClosedRange<Double>; let format: String
-    init(label: String, value: Binding<Double?>, range: ClosedRange<Double>, format: String) { self.label = label; self._value = value; self.range = range; self.format = format }
-    init(label: String, value: Binding<Int?>, range: ClosedRange<Double>, format: String) {
-        self.label = label; self.range = range; self.format = format
-        self._value = Binding(get: { value.wrappedValue.map { Double($0) } }, set: { newValue in value.wrappedValue = newValue.map { Int($0) } })
+    let label: String
+    @Binding var value: Double?
+    let range: ClosedRange<Double>
+    let format: String
+    /// Int? backing uses rounded values; label must not use `%d` with a Double.
+    private var integerStepping: Bool = false
+
+    init(label: String, value: Binding<Double?>, range: ClosedRange<Double>, format: String) {
+        self.label = label
+        self._value = value
+        self.range = range
+        self.format = format
+        self.integerStepping = false
     }
+    init(label: String, value: Binding<Int?>, range: ClosedRange<Double>, format: String) {
+        self.label = label
+        self.range = range
+        self.format = format
+        self.integerStepping = true
+        let lo = Int(range.lowerBound.rounded())
+        let hi = Int(range.upperBound.rounded())
+        self._value = Binding(
+            get: { value.wrappedValue.map { Double($0) } },
+            set: { newValue in
+                value.wrappedValue = newValue.map { raw in
+                    max(lo, min(hi, Int(raw.rounded())))
+                }
+            }
+        )
+    }
+
+    private func valueLabel(_ d: Double) -> String {
+        if integerStepping {
+            return String(format: format, Int(d.rounded()))
+        }
+        return String(format: format, d)
+    }
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 0) {
@@ -434,14 +567,17 @@ struct TriStateSliderRow: View {
                 if value == nil { Text("Inheriting").font(.system(size: 10)).foregroundStyle(.secondary) }
             }
             Spacer()
-            if let v = Binding($value) {
+            if value != nil {
                 HStack(spacing: 8) {
-                    Text(String(format: format, v.wrappedValue)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).frame(width: 32, alignment: .trailing)
-                    Slider(value: v, in: range).frame(width: 100)
+                    Text(valueLabel(value!))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 34, alignment: .trailing)
+                    Slider(value: Binding(get: { value! }, set: { value = $0 }), in: range).frame(width: 100)
                     Button(action: { value = nil }) { Image(systemName: "arrow.uturn.backward.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain)
                 }
             } else {
-                Button(action: { value = range.lowerBound + (range.upperBound-range.lowerBound)/2 }) {
+                Button(action: { value = range.lowerBound + (range.upperBound - range.lowerBound) / 2 }) {
                     Text("Customize").font(.system(size: 11, weight: .semibold)).padding(.horizontal, 8).padding(.vertical, 4).background(.blue.opacity(0.15), in: Capsule())
                 }.buttonStyle(.plain)
             }
@@ -475,37 +611,6 @@ struct ColorRow: View {
             Text(label).font(.system(size: 13, weight: .medium))
             Spacer()
             ColorPicker("", selection: colorBinding).labelsHidden()
-        }
-        .padding(.horizontal, 16).padding(.vertical, 8)
-    }
-}
-
-struct GlobalTriStateSliderRow: View {
-    let label: String; @Binding var value: Double?; let range: ClosedRange<Double>; let format: String
-    init(label: String, value: Binding<Double?>, range: ClosedRange<Double>, format: String) { self.label = label; self._value = value; self.range = range; self.format = format }
-    init(label: String, value: Binding<Int?>, range: ClosedRange<Double>, format: String) {
-        self.label = label; self.range = range; self.format = format
-        self._value = Binding(get: { value.wrappedValue.map { Double($0) } }, set: { newValue in value.wrappedValue = newValue.map { Int($0) } })
-    }
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(label).font(.system(size: 13, weight: .medium))
-                if value == nil { Text("Disabled").font(.system(size: 10)).foregroundStyle(.secondary) }
-                else { Text("Globally affects both Dock and Windows").font(.system(size: 11)).foregroundStyle(.secondary) }
-            }
-            Spacer()
-            if let v = Binding($value) {
-                HStack(spacing: 8) {
-                    Text(String(format: format, v.wrappedValue)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).frame(width: 32, alignment: .trailing)
-                    Slider(value: v, in: range).frame(width: 100)
-                    Button(action: { value = nil }) { Image(systemName: "arrow.uturn.backward.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain)
-                }
-            } else {
-                Button(action: { value = range.lowerBound + (range.upperBound-range.lowerBound)/2 }) {
-                    Text("Enable").font(.system(size: 11, weight: .semibold)).padding(.horizontal, 8).padding(.vertical, 4).background(.blue.opacity(0.15), in: Capsule())
-                }.buttonStyle(.plain)
-            }
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
@@ -566,26 +671,65 @@ extension NSColor {
 
 struct AppRuleCard: View {
     @ObservedObject var model: ConfigModel
-    @Binding var rule: AppRuleModel; let onDelete: () -> Void; @State private var expanded = false
+    @Binding var rule: AppRuleModel
+    let onDelete: () -> Void
+    @State private var expanded = false
+    @State private var resolvedAppName = ""
+    @State private var appIcon: NSImage?
+
+    private var headline: String {
+        resolvedAppName.isEmpty ? rule.bundleId : resolvedAppName
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                HStack {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
-                    Text(rule.bundleId).font(.system(size: 13, weight: .medium)); Spacer()
+            HStack(alignment: .center) {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Group {
+                        if let icon = appIcon {
+                            Image(nsImage: icon)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 22, height: 22)
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                        } else {
+                            Image(systemName: "app.fill")
+                                .font(.system(size: 18))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22, height: 22)
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(headline)
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(1)
+                        if headline != rule.bundleId {
+                            Text(rule.bundleId)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 4)
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { withAnimation { expanded.toggle() } }
-                
+
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }.buttonStyle(.plain)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
+            .onAppear { loadAppMetadata() }
+            .onChange(of: rule.bundleId) { _, _ in loadAppMetadata() }
             if expanded {
                 Divider()
                 VStack(spacing: 0) {
                     Group {
                         Text("APP OVERRIDE STATE").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.top, 8)
-                        TriStateRow(label: "Enable Sharpener", value: $rule.enabled)
+                        TriStateRow(label: "Sharpener", value: $rule.enabled, inheritSource: model.windowsEnabled)
                     }
                     
                     if rule.enabled == true {
@@ -594,11 +738,11 @@ struct AppRuleCard: View {
                             Text("MASTER WINDOW SETTINGS").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.top, 8)
                             TriStateSliderRow(label: "Radius", value: $rule.radius, range: 0...100, format: "%d")
                             Divider()
-                            TriStateRow(label: "Squircle", value: $rule.squircle)
+                            TriStateRow(label: "Squircle", value: $rule.squircle, inheritSource: model.globalSquircle)
                             Divider()
-                            TriStateRow(label: "Shadows", value: $rule.shadows)
+                            TriStateRow(label: "Shadows", value: $rule.shadows, inheritSource: model.globalShadows)
                             Divider()
-                            TriStateRow(label: "Borders", value: $rule.borders)
+                            TriStateRow(label: "Borders", value: $rule.borders, inheritSource: model.globalBorders)
                             if rule.borders == true {
                                 TriStateSliderRow(label: "Border Width", value: $rule.borderWidth, range: 1...12, format: "%.1f")
                                 Divider()
@@ -622,6 +766,30 @@ struct AppRuleCard: View {
                 .background(Color.black.opacity(0.05))
             }
         }.glassCard()
+    }
+
+    private func loadAppMetadata() {
+        let bid = rule.bundleId
+        resolvedAppName = ""
+        appIcon = nil
+        DispatchQueue.global(qos: .utility).async {
+            let name: String
+            let icon: NSImage?
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) {
+                let b = Bundle(url: url)
+                name = b?.infoDictionary?["CFBundleDisplayName"] as? String
+                    ?? b?.infoDictionary?["CFBundleName"] as? String
+                    ?? url.deletingPathExtension().lastPathComponent
+                icon = NSWorkspace.shared.icon(forFile: url.path)
+            } else {
+                name = bid
+                icon = nil
+            }
+            DispatchQueue.main.async {
+                self.resolvedAppName = name
+                self.appIcon = icon
+            }
+        }
     }
 }
 
@@ -647,20 +815,17 @@ struct GlassCard: ViewModifier {
 extension View { func glassCard() -> some View { modifier(GlassCard()) } }
 
 struct KDLEditorView: View {
-    @ObservedObject var model: ConfigModel; let delegate: AppMenuDelegate; @State private var text = ""
-    @State private var hasChanges = false
+    @ObservedObject var model: ConfigModel
     @State private var shareButtonRect: NSRect = .zero
     private let path = NSHomeDirectory() + "/.config/sharpener/config.kdl"
     
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .topTrailing) {
-                KDLTextEditor(text: $text)
+                KDLTextEditor(text: $model.editorText, model: model)
                     .glassCard()
                     .padding(16)
-                    .onChange(of: text) { _, nv in hasChanges = true }
-                
-                // Share Sheet Button
+
                 Button(action: shareConfig) {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 13, weight: .bold))
@@ -673,74 +838,71 @@ struct KDLEditorView: View {
                 .padding(.top, 28)
                 .padding(.trailing, 28)
             }
-            .overlay(alignment: .bottomLeading) {
-                // Config Path Display - Overlayed to avoid shifting the button
-                HStack(spacing: 8) {
+            .frame(maxHeight: .infinity)
+
+            // Path + actions: real layout height (no overlay overlap with the editor)
+            VStack(alignment: .leading, spacing: 10) {
+                let displayPath = path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+                HStack(alignment: .center, spacing: 10) {
                     Image(systemName: "folder.fill")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                    Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                        .frame(width: 16, height: 16, alignment: .center)
+                        .accessibilityHidden(true)
+
+                    Text(displayPath)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+
                     Button(action: copyPath) {
-                        Image(systemName: "doc.on.doc.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.blue)
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 12, weight: .medium))
                     }
-                    .buttonStyle(.plain)
-                    .help("Copy Path")
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Copy path to clipboard")
                 }
-                .padding(.leading, 24)
-                .offset(y: 12) // Pull closer to the box
-            }
-            .padding(.bottom, 6) // Reduced from 12
-            
-            HStack {
-                Spacer()
-                
-                Button(action: apply) {
-                    Label("Format and Apply", systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 13, weight: .bold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+
+                Button(action: revealInFinder) {
+                    Label("Reveal in Finder", systemImage: "arrow.forward.folder")
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glassFallback)
-                .disabled(!hasChanges && !text.isEmpty)
-                .opacity(hasChanges ? 1.0 : 0.6)
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .help("Show config file in Finder")
             }
             .padding(.horizontal, 20)
-            .padding(.bottom, 12) // Reduced from 20
+            .padding(.top, 10)
+            .padding(.bottom, 14)
         }
         .frame(height: 580)
         .onAppear {
-            text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? "# \(path) not found"
-            hasChanges = false
+            if model.editorText.isEmpty {
+                model.editorText = (try? String(contentsOfFile: path, encoding: .utf8)) ?? "# \(path) not found"
+            }
         }
-    }
-
-    private func apply() {
-        if let doc = try? KDL.parseDocument(text) {
-            let formatted = doc.description
-            text = formatted
-            save(formatted)
-            hasChanges = false
-        } else {
-            // If it can't parse, we still save it (the helper handles it safely)
-            save(text)
-            hasChanges = false
-        }
-    }
-
-    private func save(_ nv: String) {
-        DispatchQueue.global(qos: .background).async {
-            try? nv.write(toFile: path, atomically: true, encoding: .utf8)
+        .onChange(of: model.configFileGeneration) { _, _ in
+            guard let disk = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+            model.editorText = disk
         }
     }
 
     private func copyPath() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    private func revealInFinder() {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
     }
 
     private func shareConfig() {
@@ -786,15 +948,53 @@ struct GlassCircleButtonStyle: ButtonStyle {
     }
 }
 
+/// Text view that reliably becomes first responder so Edit menu / ⌘C routes correctly under SwiftUI hosting.
+final class KDLCodeTextView: NSTextView {
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { scrollRangeToVisible(selectedRange()) }
+        return ok
+    }
+}
+
 struct KDLTextEditor: NSViewRepresentable {
     @Binding var text: String
+    var model: ConfigModel
     func makeNSView(context: Context) -> NSScrollView {
-        let sc = NSScrollView(); sc.hasVerticalScroller = true; sc.drawsBackground = false
-        let tv = NSTextView(); tv.isEditable = true; tv.isRichText = false; tv.allowsUndo = true
+        let sc = NSScrollView()
+        sc.hasVerticalScroller = true
+        sc.drawsBackground = false
+        sc.autohidesScrollers = false
+        sc.borderType = .noBorder
+        let tv = KDLCodeTextView()
+        tv.drawsBackground = false
+        tv.isEditable = true
+        tv.isRichText = false
+        tv.allowsUndo = true
+        tv.isAutomaticLinkDetectionEnabled = false
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
         tv.font = NSFont(name: "SF Mono", size: 13) ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
-        tv.textColor = .labelColor; tv.backgroundColor = .clear; tv.delegate = context.coordinator
-        tv.textContainerInset = NSSize(width: 0, height: 10)
-        sc.documentView = tv; context.coordinator.textView = tv
+        tv.textColor = .labelColor
+        tv.textContainerInset = NSSize(width: 8, height: 10)
+        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.minSize = NSSize(width: 0, height: 0)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
+        tv.delegate = context.coordinator
+        sc.documentView = tv
+        context.coordinator.textView = tv
         return sc
     }
     func updateNSView(_ nsView: NSScrollView, context: Context) {
@@ -808,7 +1008,7 @@ struct KDLTextEditor: NSViewRepresentable {
         func textDidChange(_ n: Notification) {
             guard let tv = n.object as? NSTextView else { return }
             parent.text = tv.string; highlight(tv)
-            timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in Task { @MainActor in self?.format() } }
+            timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in Task { @MainActor in self?.commitFormattedKDLIfValid() } }
         }
         func textView(_ tv: NSTextView, shouldChangeTextIn r: NSRange, replacementString s: String?) -> Bool {
             if s == "\n" {
@@ -818,11 +1018,9 @@ struct KDLTextEditor: NSViewRepresentable {
             }
             return true
         }
-        func format() {
-            guard let tv = textView, parent.text.count > 0 else { return }
-            if let doc = try? KDL.parseDocument(tv.string) {
-                let f = doc.description; if f != tv.string { let s = tv.selectedRange(); tv.string = f; parent.text = f; tv.setSelectedRange(s); highlight(tv) }
-            }
+        /// Parse, canonicalize in the text view, write `config.kdl`, reload model — debounced after edits.
+        @MainActor func commitFormattedKDLIfValid() {
+            parent.model.commitFormattedKDL()
         }
         func highlight(_ tv: NSTextView) {
             guard let st = tv.textStorage else { return }

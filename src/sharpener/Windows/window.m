@@ -1,7 +1,16 @@
+/**
+ * Apple Sharpener: Window Sharpening Implementation
+ *
+ * This file contains the core logic for modifying NSWindow corner radii,
+ * applying squircle masking to layers, and managing custom window borders.
+ * It uses ZKSwizzle for method swizzling in AppKit classes.
+ */
+
 #import "window.h"
 #import "ZKSwizzle.h"
 #import "proc_utils.h"
 #import "sharpener_log.h"
+#import "window_chrome_roles.h"
 #import "window_filter.h"
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -21,6 +30,14 @@
 #ifndef AppleSharpener
 static NSString *const AppleSharpener = @"AppleSharpener";
 #endif
+
+/// Radius sent to CoreAnimation when the user requests radius = 0 (sharp corners).
+/// Must be strictly positive: CA / GPU may flush a true 0 to "no rounding" without
+/// honouring our layer mask, causing border-sync glitches.
+/// Value 1e-7 pt (~100 nm) is visually identical to a sharp corner at any screen
+/// density and is a fully normalised IEEE-754 double — unlike DBL_TRUE_MIN /
+/// nextafter(0,1), which are subnormal and can be flushed to 0 by the GPU.
+static const CGFloat kSharpenerNearZeroRadius = 1e-7;
 
 #pragma mark - Global State
 
@@ -222,20 +239,24 @@ static void initializeBorderTracking(void) {
   });
 }
 
+/// Inset applied after expanding by border width so the stroke sits slightly
+/// inside the window’s composited edge (avoids a ~1px seam).
+static const CGFloat kASBorderFrameEdgePullIn = 1.0;
+
 static NSRect calculateBorderFrame(NSRect windowFrame, CGFloat width) {
-  // Pad the frame by width to ensure it's outside
-  return NSInsetRect(windowFrame, -width, -width);
+  NSRect expanded = NSInsetRect(windowFrame, -width, -width);
+  return NSInsetRect(expanded, kASBorderFrameEdgePullIn, kASBorderFrameEdgePullIn);
 }
 
 static CGFloat calculateDisplayRadius(NSWindow *window,
                                       SharpenerWindowSettings s) {
   NSView *rootView = window.contentView.superview ?: window.contentView;
   if (!rootView)
-    return 1e-7;
+    return kSharpenerNearZeroRadius;
 
   CGFloat effectiveRadius = (CGFloat)s.radius;
   if (effectiveRadius <= 0)
-    return 1e-7;
+    return kSharpenerNearZeroRadius;
 
   CGFloat displayRadius = effectiveRadius;
   if (s.squircle) {
@@ -249,7 +270,7 @@ static CGFloat calculateDisplayRadius(NSWindow *window,
   displayRadius = MIN(displayRadius, maxRadius);
 
   if (displayRadius <= 0)
-    displayRadius = 1e-7;
+    displayRadius = kSharpenerNearZeroRadius;
 
   return displayRadius;
 }
@@ -318,7 +339,7 @@ static void applyBorderOverlay(NSWindow *window, BOOL focused) {
     CGFloat displayRadius = calculateDisplayRadius(window, s);
 
     // Synchronize border curvature with window curvature
-    // If radius is 0, we want a sharp corner (displayRadius = 1e-7)
+    // If radius is 0, we want a sharp corner (displayRadius = kSharpenerNearZeroRadius)
     // If radius > 0, we want outer radius = inner radius + border width
     if (s.radius == 0) {
       borderLayer.cornerRadius = displayRadius;
@@ -391,40 +412,29 @@ static void unhideDecorationViews(NSView *view) {
 // MARK: - Specific UI Element Sharpening
 // ─────────────────────────────────────────────────────────
 
-// Helper function to identify fullscreen sidebar glass views accurately
-static BOOL isSidebarGlassView(NSView *view) {
-  NSString *className = NSStringFromClass([view class]);
-  BOOL match = NO;
-  if ([className containsString:@"NSScrollPocket"])
-    match = YES;
-  if ([className containsString:@"12BackdropView"])
-    match = YES;
-  if (!match &&
-      [view isKindOfClass:NSClassFromString(
-                              @"NSContainerConcentricGlassEffectView")])
-    match = YES;
-  if (!match && [view isKindOfClass:NSClassFromString(@"NSGlassEffectView")])
-    match = YES;
-  if (!match && [view.superview
-                    isKindOfClass:NSClassFromString(
-                                      @"NSContainerConcentricGlassEffectView")])
-    match = YES;
-  if (!match &&
-      [view.superview isKindOfClass:NSClassFromString(@"NSGlassEffectView")] &&
-      [view.superview.superview
-          isKindOfClass:NSClassFromString(@"NSTitlebarBackgroundView")])
-    match = YES;
-  if (!match &&
-      [view isKindOfClass:NSClassFromString(@"NSTitlebarSeparatorView")] &&
-      [view.superview
-          isKindOfClass:NSClassFromString(@"NSTitlebarBackgroundView")])
-    match = YES;
+static BOOL sharpener_square_toolbar_policy(NSView *view) {
+  SharpenerWindowSettings s = getSettingsForWindow(view.window);
+  return [s.toolbar isEqualToString:@"square"];
+}
 
-  if (match) {
-    SHARPENER_LOG(@"[SidebarDebug] isSidebarGlassView matched %@ (%p)",
-                  className, view);
-  }
-  return match;
+static BOOL sharpener_square_liquid_container(NSView *view) {
+  SharpenerWindowSettings s = getSettingsForWindow(view.window);
+  if (SharpenerViewChainHasTitlebarOrToolbar(view))
+    return [s.toolbar isEqualToString:@"square"];
+  return [s.sidebar isEqualToString:@"square"];
+}
+
+static BOOL sharpener_square_ns_glass_effect(NSGlassEffectView *view) {
+  SharpenerWindowSettings s = getSettingsForWindow(view.window);
+  if (SharpenerViewChainHasTitlebarOrToolbar((NSView *)view))
+    return [s.toolbar isEqualToString:@"square"];
+  SharpenerChromeFlags f;
+  SharpenerChromeFlagsReset(&f);
+  SharpenerMergeChromeFlagsFromViewChain((NSView *)view, &f);
+  if (f.sidebar ||
+      [(NSVisualEffectView *)view material] == NSVisualEffectMaterialSidebar)
+    return [s.sidebar isEqualToString:@"square"];
+  return NO;
 }
 
 // Helper function to recursively sharpen views
@@ -433,6 +443,9 @@ static void sharpenView(NSView *view, SharpenerWindowSettings s) {
     return;
 
   NSString *className = NSStringFromClass([view class]);
+  SharpenerChromeFlags chrome;
+  SharpenerChromeFlagsReset(&chrome);
+  SharpenerMergeChromeFlagsFromViewChain(view, &chrome);
 
   BOOL foundTarget = NO;
 
@@ -491,7 +504,7 @@ static void sharpenView(NSView *view, SharpenerWindowSettings s) {
       [className containsString:@"NSBlurryAlleywayView"] ||
       [className containsString:@"NSScrollPocket"] ||
       [className containsString:@"TSidebarScrollView"] || isSidebarEffect ||
-      isSidebarGlassView(view)) {
+      chrome.sidebar) {
     foundTarget = YES;
     if ([s.sidebar isEqualToString:@"square"]) {
       if (!view.wantsLayer)
@@ -592,6 +605,9 @@ static void applySquareCorners(NSWindow *window) {
       // via KVC. The window server will handle the rim and shadow sharpening,
       // which is what the user actually sees.
       if (sharpener_is_chromium_based_process()) {
+        // Set the corner radius on the window itself — this affects the window's
+        // rim and shadow casting in the window server without touching the
+        // application's internal layer tree.
         [(id)window setValue:@(displayRadius) forKey:@"cornerRadius"];
         // NOTE: We do NOT call invalidateShadow or displayIfNeeded here for
         // Chromium as it interferes with their compositor and causes rendering
@@ -704,84 +720,136 @@ static void restoreDefaultCorners(NSWindow *window) {
 
 #pragma mark - Public API
 
-static void refreshSettings(void) {
-  NSUserDefaults *standard = [NSUserDefaults standardUserDefaults];
-  [standard addSuiteNamed:@"com.aspauldingcode.apple_sharpener"];
-  [standard synchronize];
+static id ASGetPref(NSString *suffix) {
+  if (!suffix) return nil;
+  NSString *key = [NSString stringWithFormat:@"AppleSharpener_%@", suffix];
+  
+  // 1. Check Global Domain (prefixed) - Best for Sandboxed apps
+  id v = (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key, kCFPreferencesAnyApplication);
+  if (v && v != (id)[NSNull null]) return v;
+  
+  // 2. Check Suite Domain (prefixed)
+  v = (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.aspauldingcode.apple_sharpener"));
+  if (v && v != (id)[NSNull null]) return v;
 
-  id (^resolve)(NSString *, NSString *) = ^id(NSString *mod, NSString *glob) {
-    id val = nil;
-    if (mod) {
-      val = [standard
-          objectForKey:[NSString stringWithFormat:@"AppleSharpener_%@", mod]];
-      if (val && ![val isKindOfClass:[NSNull class]])
-        return val;
-    }
-    if (glob) {
-      val = [standard
-          objectForKey:[NSString stringWithFormat:@"AppleSharpener_%@", glob]];
-      if (val && ![val isKindOfClass:[NSNull class]])
-        return val;
-    }
-    return nil;
-  };
+  // 3. Check Suite Domain (unprefixed) - Direct CLI writes
+  v = (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)suffix, CFSTR("com.aspauldingcode.apple_sharpener"));
+  if (v && v != (id)[NSNull null]) return v;
+
+  return nil;
+}
+
+static id ASResolve(NSString *mod, NSString *glob) {
+  id val = ASGetPref(mod);
+  if (val) return val;
+  return ASGetPref(glob);
+}
+
+static void refreshSettings(void) {
+  id gEn = ASGetPref(@"enabled");
+  BOOL masterEnabled = (gEn == nil) || [gEn boolValue];
+
+  id wEn = ASGetPref(@"windows_enabled");
+  if (wEn != nil) {
+    disableWindowCornerRadius = masterEnabled && [wEn boolValue];
+  } else {
+    disableWindowCornerRadius = masterEnabled;
+  }
+  
+  NSLog(@"[AppleSharpener] refreshSettings: master=%d, windows=%d", masterEnabled, disableWindowCornerRadius);
+
+  // Windows module off: same idea as dock — do not inherit global radius /
+  // squircle / borders into statics (looked like `-w off` still sharpened).
+  if (!disableWindowCornerRadius) {
+    id val;
+    id wr = ASGetPref(@"windows_radius");
+    windowCustomRadius = wr ? [wr integerValue] : 0;
+    if ((val = ASGetPref(@"windows_squircle")))
+      squircleEnabled = [val boolValue];
+    else
+      squircleEnabled = YES;
+    if ((val = ASGetPref(@"windows_squircle_exponent")))
+      squircleExponent = [val doubleValue];
+    else
+      squircleExponent = 4.0;
+    if ((val = ASGetPref(@"windows_shadows")))
+      globalShadows = [val boolValue];
+    else
+      globalShadows = YES;
+
+    windowBordersEnabled = NO;
+    windowBorderWidth = 4.0;
+    windowBorderColorActive = nil;
+    windowBorderColorInactive = nil;
+
+    if ((val = ASGetPref(@"traffic_lights_mode")))
+      trafficLightsMode = val;
+    else
+      trafficLightsMode = @"default";
+    if ((val = ASGetPref(@"sidebar_mode")))
+      sidebarMode = val;
+    else
+      sidebarMode = @"default";
+    if ((val = ASGetPref(@"toolbar_mode")))
+      toolbarMode = val;
+    else
+      toolbarMode = @"default";
+
+    if ((val = ASGetPref(@"rules")))
+      appRules = (NSArray *)val;
+    return;
+  }
 
   id val;
-  if ((val = resolve(@"windows_enabled", @"enabled")))
-    disableWindowCornerRadius = [val boolValue];
-  else
-    disableWindowCornerRadius = YES;
-  if ((val = resolve(@"windows_radius", @"radius")))
+  if ((val = ASResolve(@"windows_radius", @"radius")))
     windowCustomRadius = [val integerValue];
   else
     windowCustomRadius = 0;
-  // Resolve squircle from module key falling back to global key
-  if ((val = resolve(@"windows_squircle", @"squircle_enabled")))
+  if ((val = ASResolve(@"windows_squircle", @"squircle_enabled")))
     squircleEnabled = [val boolValue];
   else
     squircleEnabled = YES;
-  if ((val = resolve(@"windows_squircle_exponent", @"squircle_exponent")))
+  if ((val = ASResolve(@"windows_squircle_exponent", @"squircle_exponent")))
     squircleExponent = [val doubleValue];
   else
     squircleExponent = 4.0;
-  if ((val = resolve(@"windows_shadows", @"global_shadows")))
+  if ((val = ASResolve(@"windows_shadows", @"global_shadows")))
     globalShadows = [val boolValue];
   else
     globalShadows = YES;
 
-  // Borders
-  if ((val = resolve(@"windows_borders", @"global_borders")))
+  if ((val = ASResolve(@"windows_borders", @"global_borders")))
     windowBordersEnabled = [val boolValue];
   else
     windowBordersEnabled = NO;
 
-  if ((val = resolve(@"windows_border_width", @"global_border_width")))
+  if ((val = ASResolve(@"windows_border_width", @"global_border_width")))
     windowBorderWidth = [val doubleValue];
   else
     windowBorderWidth = 4.0;
-  if ((val = resolve(@"windows_border_color_active",
+  if ((val = ASResolve(@"windows_border_color_active",
                      @"global_border_color_active")))
     windowBorderColorActive = val;
-  if ((val = resolve(@"windows_border_color_inactive",
+  if ((val = ASResolve(@"windows_border_color_inactive",
                      @"global_border_color_inactive")))
     windowBorderColorInactive = val;
 
-  if ((val = resolve(@"traffic_lights_mode", nil)))
+  if ((val = ASResolve(@"traffic_lights_mode", nil)))
     trafficLightsMode = val;
   else
     trafficLightsMode = @"default";
 
-  if ((val = resolve(@"sidebar_mode", nil)))
+  if ((val = ASResolve(@"sidebar_mode", nil)))
     sidebarMode = val;
   else
     sidebarMode = @"default";
 
-  if ((val = resolve(@"toolbar_mode", nil)))
+  if ((val = ASResolve(@"toolbar_mode", nil)))
     toolbarMode = val;
   else
     toolbarMode = @"default";
 
-  if ((val = [standard objectForKey:@"AppleSharpener_rules"]))
+  if ((val = ASGetPref(@"rules")))
     appRules = (NSArray *)val;
 }
 
@@ -802,23 +870,34 @@ void toggleSquareCorners(__unused BOOL enable, __unused NSInteger radius,
           if (isStandard) {
             // Temporarily lift recursion guard to force a manual redraw
             setApplyingSquareCorners(window, NO);
-            applySquareCorners(window);
-            // Refresh border state
-            applyBorderOverlay(window, window.isKeyWindow);
-            applySpecificUIElementSharpening(window);
+            SharpenerWindowSettings s = getSettingsForWindow(window);
+            if (!s.enabled) {
+              // Module off: actually undo our layers/KVC (applySquareCorners
+              // no-ops when !s.enabled).
+              restoreDefaultCorners(window);
+              applyBorderOverlay(window, window.isKeyWindow);
+            } else {
+              // Re-enable / refresh: restore first so persisted radius,
+              // squircle, and borders re-apply cleanly after a module-off
+              // period (menubar quick toggle, CLI, etc.).
+              restoreDefaultCorners(window);
+              applySquareCorners(window);
+              applyBorderOverlay(window, window.isKeyWindow);
+              applySpecificUIElementSharpening(window);
 
-            // Nudge trick: modify the window frame by a tiny, invisible amount
-            // to forcefully trigger a deep AppKit relayout and invalidation
-            // pass inside Core Animation cache. This forces square styles to
-            // hit the sublayers instantly.
-            NSRect frame = window.frame;
-            NSRect nudgedFrame = frame;
-            nudgedFrame.size.height += 0.0001;
-            nudgedFrame.size.width += 0.0001;
-            [window setFrame:nudgedFrame display:NO];
-            [window setFrame:frame display:YES];
-            [window display];
-            [window setViewsNeedDisplay:YES];
+              // Nudge trick: modify the window frame by a tiny, invisible amount
+              // to forcefully trigger a deep AppKit relayout and invalidation
+              // pass inside Core Animation cache. This forces square styles to
+              // hit the sublayers instantly.
+              NSRect frame = window.frame;
+              NSRect nudgedFrame = frame;
+              nudgedFrame.size.height += 0.0001;
+              nudgedFrame.size.width += 0.0001;
+              [window setFrame:nudgedFrame display:NO];
+              [window setFrame:frame display:YES];
+              [window display];
+              [window setViewsNeedDisplay:YES];
+            }
           } else if (isFullscreenSidebar) {
             // For fullscreen windows: only run the sidebar-specific sharpening
             // pass. Do NOT apply applySquareCorners (that would interfere with
@@ -1136,6 +1215,14 @@ void initWindowSharpener(void) {
                   toggleSquareCorners(0, 0, 0, 0);
                 }];
 
+    // Listen for low-level Darwin notification from CLI/Helper
+    notify_register_dispatch("com.aspauldingcode.apple_sharpener.modules.update",
+                             &(int){0}, queue, ^(int token) {
+                               (void)token;
+                               refreshSettings();
+                               toggleSquareCorners(0, 0, 0, 0);
+                             });
+
   } @catch (NSException *e) {
   }
 }
@@ -1146,9 +1233,8 @@ ZKSwizzleInterfaceGroup(AS_NSWindow_CornerRadius, NSWindow, NSWindow,
                         AppleSharpener) @implementation AS_NSWindow_CornerRadius
 
 - (void)setHasShadow:(BOOL)hasShadow {
-  ZKOrig(void, hasShadow);
-
   if (sharpener_is_chromium_based_process()) {
+    ZKOrig(void, hasShadow);
     return;
   }
   SharpenerWindowSettings s = getSettingsForWindow((NSWindow *)self);
@@ -1161,18 +1247,29 @@ ZKSwizzleInterfaceGroup(AS_NSWindow_CornerRadius, NSWindow, NSWindow,
 }
 
 - (void)invalidateShadow {
-  ZKOrig(void);
-
   if (sharpener_is_chromium_based_process()) {
+    ZKOrig(void);
     return;
   }
   SharpenerWindowSettings s = getSettingsForWindow((NSWindow *)self);
   if (disableWindowCornerRadius && !s.shadows &&
       isStandardAppWindow((NSWindow *)self)) {
-    ZKOrig(void);
-  } else {
-    ZKOrig(void);
+    return;
   }
+  ZKOrig(void);
+}
+
+/// macOS 26+ still paints a titlebar “rim” from shadow parameters when
+/// `hasShadow` is NO. Returning nil matches disabling shadow metadata entirely.
+- (id)shadowParameters {
+  if (sharpener_is_chromium_based_process())
+    return ZKOrig(id);
+  SharpenerWindowSettings s = getSettingsForWindow((NSWindow *)self);
+  if (disableWindowCornerRadius && !s.shadows &&
+      isStandardAppWindow((NSWindow *)self)) {
+    return nil;
+  }
+  return ZKOrig(id);
 }
 
 - (void)orderFront:(id)sender {
@@ -1286,7 +1383,7 @@ ZKSwizzleInterfaceGroup(AS_NSWindow_CornerRadius, NSWindow, NSWindow,
 
   CGFloat effectiveRadius = (CGFloat)s.radius;
   if (effectiveRadius == 0)
-    effectiveRadius = 1e-7;
+    effectiveRadius = kSharpenerNearZeroRadius;
 
   CGFloat displayRadius = effectiveRadius;
   if (s.squircle && s.radius > 0) {
@@ -1301,7 +1398,7 @@ ZKSwizzleInterfaceGroup(AS_NSWindow_CornerRadius, NSWindow, NSWindow,
     displayRadius = MIN(displayRadius, maxR);
   }
   if (displayRadius <= 0)
-    displayRadius = 1e-7;
+    displayRadius = kSharpenerNearZeroRadius;
 
   ZKOrig(void, displayRadius);
 
@@ -1413,17 +1510,17 @@ ZKSwizzleInterfaceGroup(AS_CALayer_Square, CALayer, CALayer, AppleSharpener)
   ZKOrig(void);
 
   if ([(CALayer *)self _shouldBeSquare]) {
-    ((CALayer *)self).cornerRadius = 1e-7;
+    ((CALayer *)self).cornerRadius = kSharpenerNearZeroRadius;
 
     if (((CALayer *)self).mask) {
-      ((CALayer *)self).mask.cornerRadius = 1e-7;
+      ((CALayer *)self).mask.cornerRadius = kSharpenerNearZeroRadius;
     }
   }
 }
 
 - (void)setCornerRadius:(CGFloat)radius {
   if ([(CALayer *)self _shouldBeSquare]) {
-    ZKOrig(void, 1e-7);
+    ZKOrig(void, kSharpenerNearZeroRadius);
   } else {
     ZKOrig(void, radius);
   }
@@ -1434,103 +1531,39 @@ ZKSwizzleInterfaceGroup(AS_CALayer_Square, CALayer, CALayer, AppleSharpener)
     return NO;
 
   CALayer *layer = (CALayer *)self;
-  id delegate = layer.delegate;
-  NSView *directView = nil;
 
-  if (delegate && [delegate isKindOfClass:[NSView class]]) {
-    directView = (NSView *)delegate;
-  }
-
-  NSView *hostView = directView;
-  CALayer *currentLayer = layer;
-  // Protection of CABackdropLayer is handled later after identifying the
-  // component type.
-
-  BOOL isSidebar = NO;
-  if (directView) {
-    NSString *dvClassName = NSStringFromClass(directView.class);
-    if ([dvClassName containsString:@"Sidebar"] ||
-        [dvClassName containsString:@"SourceList"] ||
-        isSidebarGlassView(directView)) {
-      isSidebar = YES;
-    }
-    if ([directView isKindOfClass:[NSVisualEffectView class]] &&
-        [(NSVisualEffectView *)directView material] ==
-            NSVisualEffectMaterialSidebar) {
-      isSidebar = YES;
-    }
-  }
-
-  BOOL isToolbar = NO;
-  BOOL isTrafficLight = NO;
-  BOOL isMenu = NO;
-
-  NSWindow *window = nil;
-  while (currentLayer) {
-    id currentDel = currentLayer.delegate;
-    if (currentDel && [currentDel isKindOfClass:[NSView class]]) {
-      NSView *cv = (NSView *)currentDel;
-      if (!hostView)
-        hostView = cv;
-      if (!window)
-        window = cv.window;
-
-      NSString *cvClassName = NSStringFromClass(cv.class);
-
-      if ([cvClassName containsString:@"Menu"] ||
-          [cvClassName containsString:@"PopUp"] ||
-          [cvClassName containsString:@"Shadow"] ||
-          [cvClassName containsString:@"Tooltip"] ||
-          [cvClassName containsString:@"Overlay"] ||
-          [cvClassName containsString:@"Popover"]) {
-        isMenu = YES;
-      }
-
-      if ([cvClassName containsString:@"ThemeWidget"] ||
-          [cvClassName containsString:@"TrafficLight"] ||
-          [cvClassName containsString:@"NSTitlebarWidget"] ||
-          [cvClassName containsString:@"WindowButton"]) {
-        isTrafficLight = YES;
-      }
-
-      if ([cvClassName containsString:@"Toolbar"] ||
-          [cvClassName containsString:@"NSToolbar"] ||
-          [cvClassName containsString:@"NSTitlebar"]) {
-        isToolbar = YES;
-      }
-    }
-    currentLayer = currentLayer.superlayer;
-  }
-
-  // Protect CABackdropLayer and CASDFElementLayer strictly.
-  // This is what gives NSVisualEffectView and toolbars their glossy / vibrant
-  // material look. If we zero their cornerRadius directly, it replaces the
-  // sophisticated material with a generic flattened appearance.
   NSString *lClass = NSStringFromClass(layer.class);
   if ([lClass isEqualToString:@"CABackdropLayer"] ||
       [lClass isEqualToString:@"CASDFElementLayer"] ||
       [lClass containsString:@"SDF"]) {
-    // STRICT PROTECTION: Always return NO for material layers to preserve
-    // "Liquid Glass" rendering path. Squaring is achieved via parent clipping.
     return NO;
   }
 
-  NSWindow *windowToUse = window;
-  if (!windowToUse && hostView)
-    windowToUse = hostView.window;
-
-  if (!windowToUse) {
-    if (isSidebar) {
-      BOOL shouldBeSquare = [sidebarMode isEqualToString:@"square"];
-      SHARPENER_LOG(@"[SidebarDebug] Sidebar found but window is nil. Mode: "
-                    @"%@, returning %d",
-                    sidebarMode, shouldBeSquare);
-      return shouldBeSquare;
+  BOOL isMenu = NO;
+  for (CALayer *cur = layer; cur != nil; cur = cur.superlayer) {
+    id del = cur.delegate;
+    if (!del || ![del isKindOfClass:[NSView class]])
+      continue;
+    NSString *cvn = NSStringFromClass([(NSView *)del class]);
+    if ([cvn containsString:@"Menu"] || [cvn containsString:@"PopUp"] ||
+        [cvn containsString:@"Shadow"] || [cvn containsString:@"Tooltip"] ||
+        [cvn containsString:@"Overlay"] || [cvn containsString:@"Popover"]) {
+      isMenu = YES;
+      break;
     }
-    return NO;
   }
-
   if (isMenu)
+    return NO;
+
+  SharpenerChromeFlags flags;
+  SharpenerChromeFlagsReset(&flags);
+  SharpenerMergeChromeFlagsFromCALayer(layer, &flags);
+
+  NSWindow *windowToUse = SharpenerWindowForCALayer(layer);
+  if (!windowToUse)
+    return NO;
+
+  if (!isStandardAppWindow(windowToUse) && !isWindowFullscreen(windowToUse))
     return NO;
 
   NSString *wClass = NSStringFromClass(windowToUse.class);
@@ -1540,36 +1573,21 @@ ZKSwizzleInterfaceGroup(AS_CALayer_Square, CALayer, CALayer, AppleSharpener)
     return NO;
   }
 
-  // For sidebar layers that live inside fullscreen auxiliary windows
-  // (NSTitlebarFullScreenWindow, etc.), isStandardAppWindow() returns NO.
-  // But we still want to square the sidebar that peeks into the titlebar area.
-  // Read sidebarMode directly to bypass the window-level gating.
-  if (isSidebar && isWindowFullscreen(windowToUse)) {
-    BOOL shouldBeSquare = [sidebarMode isEqualToString:@"square"];
-    SHARPENER_LOG(@"[SidebarDebug] isSidebar && isFullscreen for window: %@, "
-                  @"returning %d",
-                  wClass, shouldBeSquare);
-    return shouldBeSquare;
-  }
-
   SharpenerWindowSettings s = getSettingsForWindow(windowToUse);
 
-  if (isSidebar)
-    return [s.sidebar isEqualToString:@"square"];
-  if (isTrafficLight)
-    return [s.trafficLights isEqualToString:@"square"];
-  if (isToolbar)
-    return [s.toolbar isEqualToString:@"square"];
-
-  // Global sharpening
-  if (s.radius == 0 && isStandardAppWindow(window)) {
-    if (isTrafficLight || isToolbar || isSidebar) {
-      if (isSidebar && [sidebarMode isEqualToString:@"square"])
-        return YES;
-      return NO;
-    }
-    return YES;
+  if (isWindowFullscreen(windowToUse)) {
+    if (flags.toolbarTitlebar)
+      return [s.toolbar isEqualToString:@"square"];
+    if (flags.sidebar)
+      return [s.sidebar isEqualToString:@"square"];
   }
+
+  if (flags.trafficLight)
+    return [s.trafficLights isEqualToString:@"square"];
+  if (flags.toolbarTitlebar)
+    return [s.toolbar isEqualToString:@"square"];
+  if (flags.sidebar)
+    return [s.sidebar isEqualToString:@"square"];
 
   return NO;
 }
@@ -1597,7 +1615,7 @@ ZKSwizzleInterfaceGroup(AS_TrafficLight_CornerRadius, _NSThemeWidget, NSView,
     return;
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
-  ZKOrig(void, [s.trafficLights isEqualToString:@"square"] ? 1e-7 : radius);
+  ZKOrig(void, [s.trafficLights isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius);
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
@@ -1605,7 +1623,7 @@ ZKSwizzleInterfaceGroup(AS_TrafficLight_CornerRadius, _NSThemeWidget, NSView,
     return;
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
-  ZKOrig(void, [s.trafficLights isEqualToString:@"square"] ? 1e-7 : radius);
+  ZKOrig(void, [s.trafficLights isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius);
 }
 @end
 #pragma clang diagnostic pop
@@ -1628,7 +1646,7 @@ ZKSwizzleInterfaceGroup(AS_TrafficLightView_CornerRadius, NSTrafficLightView,
     return;
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
-  ZKOrig(void, [s.trafficLights isEqualToString:@"square"] ? 1e-7 : radius);
+  ZKOrig(void, [s.trafficLights isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius);
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
@@ -1636,7 +1654,7 @@ ZKSwizzleInterfaceGroup(AS_TrafficLightView_CornerRadius, NSTrafficLightView,
     return;
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
-  ZKOrig(void, [s.trafficLights isEqualToString:@"square"] ? 1e-7 : radius);
+  ZKOrig(void, [s.trafficLights isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius);
 }
 @end
 #pragma clang diagnostic pop
@@ -1660,7 +1678,7 @@ ZKSwizzleInterfaceGroup(AS_Sidebar_CornerRadius, NSSidebarView, NSView,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.sidebar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.sidebar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
@@ -1669,7 +1687,7 @@ ZKSwizzleInterfaceGroup(AS_Sidebar_CornerRadius, NSSidebarView, NSView,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.sidebar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.sidebar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 @end
 #pragma clang diagnostic pop
@@ -1694,7 +1712,7 @@ ZKSwizzleInterfaceGroup(AS_SidebarSeparator_CornerRadius,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.sidebar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.sidebar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
@@ -1703,7 +1721,7 @@ ZKSwizzleInterfaceGroup(AS_SidebarSeparator_CornerRadius,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.sidebar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.sidebar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 @end
 #pragma clang diagnostic pop
@@ -1730,7 +1748,7 @@ ZKSwizzleInterfaceGroup(AS_VisualEffectSidebar_CornerRadius, NSVisualEffectView,
   ZKOrig(void, (CGFloat)([s.sidebar isEqualToString:@"square"] &&
                                  [(NSVisualEffectView *)self material] ==
                                      NSVisualEffectMaterialSidebar
-                             ? 1e-7
+                             ? kSharpenerNearZeroRadius
                              : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
@@ -1742,7 +1760,7 @@ ZKSwizzleInterfaceGroup(AS_VisualEffectSidebar_CornerRadius, NSVisualEffectView,
   ZKOrig(void, (CGFloat)([s.sidebar isEqualToString:@"square"] &&
                                  [(NSVisualEffectView *)self material] ==
                                      NSVisualEffectMaterialSidebar
-                             ? 1e-7
+                             ? kSharpenerNearZeroRadius
                              : radius));
 }
 @end
@@ -1758,7 +1776,7 @@ ZKSwizzleInterfaceGroup(AS_ConcentricGlass_CornerRadius,
 - (id)_cornerMask {
   if (sharpener_is_chromium_based_process())
     return ZKOrig(id);
-  if ([sidebarMode isEqualToString:@"square"])
+  if (sharpener_square_liquid_container((NSView *)self))
     return nil;
   return ZKOrig(id);
 }
@@ -1767,16 +1785,18 @@ ZKSwizzleInterfaceGroup(AS_ConcentricGlass_CornerRadius,
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void,
-         (CGFloat)([sidebarMode isEqualToString:@"square"] ? 1e-7 : radius));
+  ZKOrig(void, (CGFloat)(sharpener_square_liquid_container((NSView *)self)
+                             ? kSharpenerNearZeroRadius
+                             : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void,
-         (CGFloat)([sidebarMode isEqualToString:@"square"] ? 1e-7 : radius));
+  ZKOrig(void, (CGFloat)(sharpener_square_liquid_container((NSView *)self)
+                             ? kSharpenerNearZeroRadius
+                             : radius));
 }
 @end
 #pragma clang diagnostic pop
@@ -1789,7 +1809,7 @@ ZKSwizzleInterfaceGroup(AS_AlleywayView_CornerRadius, NSBlurryAlleywayView,
 - (id)_cornerMask {
   if (sharpener_is_chromium_based_process())
     return ZKOrig(id);
-  if ([sidebarMode isEqualToString:@"square"])
+  if (sharpener_square_liquid_container((NSView *)self))
     return nil;
   return ZKOrig(id);
 }
@@ -1798,16 +1818,18 @@ ZKSwizzleInterfaceGroup(AS_AlleywayView_CornerRadius, NSBlurryAlleywayView,
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void,
-         (CGFloat)([sidebarMode isEqualToString:@"square"] ? 1e-7 : radius));
+  ZKOrig(void, (CGFloat)(sharpener_square_liquid_container((NSView *)self)
+                             ? kSharpenerNearZeroRadius
+                             : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void,
-         (CGFloat)([sidebarMode isEqualToString:@"square"] ? 1e-7 : radius));
+  ZKOrig(void, (CGFloat)(sharpener_square_liquid_container((NSView *)self)
+                             ? kSharpenerNearZeroRadius
+                             : radius));
 }
 @end
 #pragma clang diagnostic pop
@@ -1821,7 +1843,7 @@ ZKSwizzleInterfaceGroup(AS_ScrollPocket_CornerRadius, NSScrollPocket, NSView,
 - (id)_cornerMask {
   if (sharpener_is_chromium_based_process())
     return ZKOrig(id);
-  if ([sidebarMode isEqualToString:@"square"])
+  if (sharpener_square_liquid_container((NSView *)self))
     return nil;
   return ZKOrig(id);
 }
@@ -1830,16 +1852,18 @@ ZKSwizzleInterfaceGroup(AS_ScrollPocket_CornerRadius, NSScrollPocket, NSView,
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void,
-         (CGFloat)([sidebarMode isEqualToString:@"square"] ? 1e-7 : radius));
+  ZKOrig(void, (CGFloat)(sharpener_square_liquid_container((NSView *)self)
+                             ? kSharpenerNearZeroRadius
+                             : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void,
-         (CGFloat)([sidebarMode isEqualToString:@"square"] ? 1e-7 : radius));
+  ZKOrig(void, (CGFloat)(sharpener_square_liquid_container((NSView *)self)
+                             ? kSharpenerNearZeroRadius
+                             : radius));
 }
 @end
 #pragma clang diagnostic pop
@@ -1852,8 +1876,7 @@ ZKSwizzleInterfaceGroup(AS_CoreHostingView_CornerRadius, _NSCoreHostingView,
 - (id)_cornerMask {
   if (sharpener_is_chromium_based_process())
     return ZKOrig(id);
-  if ([sidebarMode isEqualToString:@"square"] &&
-      isSidebarGlassView((NSView *)self))
+  if (sharpener_square_liquid_container((NSView *)self))
     return nil;
   return ZKOrig(id);
 }
@@ -1862,9 +1885,8 @@ ZKSwizzleInterfaceGroup(AS_CoreHostingView_CornerRadius, _NSCoreHostingView,
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void, (CGFloat)([sidebarMode isEqualToString:@"square"] &&
-                                 isSidebarGlassView((NSView *)self)
-                             ? 1e-7
+  ZKOrig(void, (CGFloat)(sharpener_square_liquid_container((NSView *)self)
+                             ? kSharpenerNearZeroRadius
                              : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
@@ -1872,9 +1894,8 @@ ZKSwizzleInterfaceGroup(AS_CoreHostingView_CornerRadius, _NSCoreHostingView,
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void, (CGFloat)([sidebarMode isEqualToString:@"square"] &&
-                                 isSidebarGlassView((NSView *)self)
-                             ? 1e-7
+  ZKOrig(void, (CGFloat)(sharpener_square_liquid_container((NSView *)self)
+                             ? kSharpenerNearZeroRadius
                              : radius));
 }
 @end
@@ -1888,8 +1909,7 @@ ZKSwizzleInterfaceGroup(AS_TitlebarSeparator_CornerRadius,
 - (id)_cornerMask {
   if (sharpener_is_chromium_based_process())
     return ZKOrig(id);
-  if ([sidebarMode isEqualToString:@"square"] &&
-      isSidebarGlassView((NSView *)self))
+  if (sharpener_square_toolbar_policy((NSView *)self))
     return nil;
   return ZKOrig(id);
 }
@@ -1898,9 +1918,8 @@ ZKSwizzleInterfaceGroup(AS_TitlebarSeparator_CornerRadius,
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void, (CGFloat)([sidebarMode isEqualToString:@"square"] &&
-                                 isSidebarGlassView((NSView *)self)
-                             ? 1e-7
+  ZKOrig(void, (CGFloat)(sharpener_square_toolbar_policy((NSView *)self)
+                             ? kSharpenerNearZeroRadius
                              : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
@@ -1908,9 +1927,8 @@ ZKSwizzleInterfaceGroup(AS_TitlebarSeparator_CornerRadius,
     ZKOrig(void, radius);
     return;
   }
-  ZKOrig(void, (CGFloat)([sidebarMode isEqualToString:@"square"] &&
-                                 isSidebarGlassView((NSView *)self)
-                             ? 1e-7
+  ZKOrig(void, (CGFloat)(sharpener_square_toolbar_policy((NSView *)self)
+                             ? kSharpenerNearZeroRadius
                              : radius));
 }
 @end
@@ -1936,7 +1954,7 @@ ZKSwizzleInterfaceGroup(AS_ToolbarItem_CornerRadius, NSToolbarItemViewer,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.toolbar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.toolbar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
@@ -1945,7 +1963,7 @@ ZKSwizzleInterfaceGroup(AS_ToolbarItem_CornerRadius, NSToolbarItemViewer,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.toolbar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.toolbar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 @end
 #pragma clang diagnostic pop
@@ -1969,7 +1987,7 @@ ZKSwizzleInterfaceGroup(AS_ToolbarSeparator_CornerRadius,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.toolbar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.toolbar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
@@ -1978,7 +1996,7 @@ ZKSwizzleInterfaceGroup(AS_ToolbarSeparator_CornerRadius,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.toolbar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.toolbar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 @end
 #pragma clang diagnostic pop
@@ -2002,7 +2020,7 @@ ZKSwizzleInterfaceGroup(AS_ToolbarClipView_CornerRadius, _NSToolbarClipView,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.toolbar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.toolbar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
@@ -2011,7 +2029,7 @@ ZKSwizzleInterfaceGroup(AS_ToolbarClipView_CornerRadius, _NSToolbarClipView,
   }
   SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
   ZKOrig(void,
-         (CGFloat)([s.toolbar isEqualToString:@"square"] ? 1e-7 : radius));
+         (CGFloat)([s.toolbar isEqualToString:@"square"] ? kSharpenerNearZeroRadius : radius));
 }
 @end
 #pragma clang diagnostic pop
@@ -2024,8 +2042,7 @@ ZKSwizzleInterfaceGroup(AS_GlassEffect_CornerRadius, NSGlassEffectView, NSView,
 - (id)_cornerMask {
   if (sharpener_is_chromium_based_process())
     return ZKOrig(id);
-  SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
-  if ([s.sidebar isEqualToString:@"square"])
+  if (sharpener_square_ns_glass_effect((NSGlassEffectView *)self))
     return nil;
   return ZKOrig(id);
 }
@@ -2034,18 +2051,20 @@ ZKSwizzleInterfaceGroup(AS_GlassEffect_CornerRadius, NSGlassEffectView, NSView,
     ZKOrig(void, radius);
     return;
   }
-  SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
-  ZKOrig(void,
-         (CGFloat)([s.sidebar isEqualToString:@"square"] ? 1e-7 : radius));
+  ZKOrig(void, (CGFloat)(sharpener_square_ns_glass_effect(
+                             (NSGlassEffectView *)self)
+                             ? kSharpenerNearZeroRadius
+                             : radius));
 }
 - (void)setCornerRadius:(CGFloat)radius {
   if (sharpener_is_chromium_based_process()) {
     ZKOrig(void, radius);
     return;
   }
-  SharpenerWindowSettings s = getSettingsForWindow(((NSView *)self).window);
-  ZKOrig(void,
-         (CGFloat)([s.sidebar isEqualToString:@"square"] ? 1e-7 : radius));
+  ZKOrig(void, (CGFloat)(sharpener_square_ns_glass_effect(
+                             (NSGlassEffectView *)self)
+                             ? kSharpenerNearZeroRadius
+                             : radius));
 }
 @end
 #pragma clang diagnostic pop

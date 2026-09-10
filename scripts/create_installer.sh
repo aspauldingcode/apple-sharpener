@@ -10,6 +10,7 @@ PKG_NAME="apple-sharpener-${VERSION}.pkg"
 CHANGELOG_FILE="$REPO_ROOT/CHANGELOG.md"
 BUILD_FILE="$REPO_ROOT/out/libapple_sharpener.dylib"
 CLI_BUILD_FILE="$REPO_ROOT/out/sharpener"
+CONFIGURATOR_BUILD_FILE="$REPO_ROOT/out/sharpener-configurator"
 
 # Change to repository root
 cd "$REPO_ROOT"
@@ -22,7 +23,7 @@ if [ -f "$CHANGELOG_FILE" ] && grep -q "## \[${VERSION}\]" "$CHANGELOG_FILE"; th
 fi
 
 # Check if build exists, if not, run make
-if [ ! -f "$BUILD_FILE" ] || [ ! -f "$CLI_BUILD_FILE" ]; then
+if [ ! -f "$BUILD_FILE" ] || [ ! -f "$CLI_BUILD_FILE" ] || [ ! -f "$CONFIGURATOR_BUILD_FILE" ]; then
     echo "Build not found. Running make..."
     if ! make; then
         echo "Error: Build failed"
@@ -64,14 +65,13 @@ if ! cp "$REPO_ROOT/out/sharpener-helper" "$PAYLOAD_DIR/usr/local/bin/"; then
     exit 1
 fi
 
-# Copy ASConfigurator app to /Applications
-mkdir -p "$PAYLOAD_DIR/Applications"
-if ! cp -r "$REPO_ROOT/src/gui/ASConfigurator/Apple Sharpener Configurator.app" "$PAYLOAD_DIR/Applications/"; then
-    echo "Error: Failed to copy Apple Sharpener Configurator"
+if ! cp "$CONFIGURATOR_BUILD_FILE" "$PAYLOAD_DIR/usr/local/bin/"; then
+    echo "Error: Failed to copy sharpener-configurator"
     rm -rf "$TEMP_DIR"
     exit 1
 fi
 
+# Legacy .app bundles were removed; postinstall deletes them if present.
 # Copy LaunchAgents
 mkdir -p "$PAYLOAD_DIR/Library/LaunchAgents"
 if ! cp "$REPO_ROOT/src/helper/com.aspauldingcode.sharpener.helper.plist" "$PAYLOAD_DIR/Library/LaunchAgents/"; then
@@ -88,6 +88,9 @@ fi
 # Create postinstall script
 cat > "$SCRIPTS_DIR/postinstall" << 'EOF'
 #!/bin/bash
+
+# Remove deprecated GUI bundles (menubar configurator is /usr/local/bin/sharpener-configurator)
+rm -rf "/Applications/Apple Sharpener Configurator.app" "/Applications/ASConfigurator.app" 2>/dev/null || true
 
 # Remove any root-loaded instances
 launchctl bootout system /Library/LaunchAgents/com.aspauldingcode.sharpener.helper.plist 2>/dev/null || launchctl unload /Library/LaunchAgents/com.aspauldingcode.sharpener.helper.plist 2>/dev/null || true

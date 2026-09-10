@@ -29,7 +29,7 @@ Apple Sharpener can be configured both imperatively via the command line, and de
 
 ### Graphical Configuration
 
-Apple Sharpener comes with the `ASConfigurator.app` bundled. Launching this application provides a "Liquid Glass" GUI built natively in AppKit that edits your `.kdl` configurations instantly. Changes made in the GUI update active app windows immediately, without needing a restart.
+Apple Sharpener installs **`sharpener-configurator`** to `/usr/local/bin` and starts it via `com.aspauldingcode.asconfigurator` LaunchAgent. It is a **menubar-only** agent (activation policy accessory): it does not live in `/Applications` and does not get a Dock tile. The **Liquid Glass** settings UI is built in AppKit/SwiftUI; edits apply to your `.kdl` and live prefs immediately.
 
 ### KDL Declarative Configuration
 

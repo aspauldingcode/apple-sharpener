@@ -1,3 +1,11 @@
+/**
+ * Apple Sharpener: Window Filtering Utilities
+ *
+ * Provides a comprehensive set of inline helpers to determine which windows
+ * should be modified by the sharpener. This includes logic to exclude
+ * system-critical overlays, Mission Control, and other non-standard windows.
+ */
+
 #ifndef WINDOW_FILTER_H
 #define WINDOW_FILTER_H
 

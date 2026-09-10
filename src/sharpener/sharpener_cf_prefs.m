@@ -1,10 +1,19 @@
+/**
+ * Apple Sharpener: Preference Mirroring Implementation
+ *
+ * Implements the logic to synchronize local settings with the global
+ * CFPreferences domain and broadcast update notifications.
+ */
+
 #import "sharpener_cf_prefs.h"
 #import <CoreFoundation/CoreFoundation.h>
+#import <notify.h>
 
 static NSSet *SharpenerMirroredSuiteKeys(void) {
   static NSSet *keys;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
+    // Whitelist of keys that are mirrored to the global domain for sandboxed app access
     keys = [NSSet setWithObjects:
         @"enabled", @"radius", @"squircle_enabled", @"squircle_exponent",
         @"global_borders", @"global_border_width", @"global_border_color_active",
@@ -49,9 +58,13 @@ void SharpenerMirrorSuiteDefaultsToCF(NSUserDefaults *suite) {
 }
 
 void SharpenerPostModulesUpdateNotification(void) {
+  // Low-level Darwin notification (for dylib/helper)
+  notify_post("com.aspauldingcode.apple_sharpener.modules.update");
+
+  // High-level Distributed notification (for safe GUI/Swift integration)
   [[NSDistributedNotificationCenter defaultCenter]
       postNotificationName:@"com.aspauldingcode.apple_sharpener.modules.update"
                     object:nil
                   userInfo:nil
-       deliverImmediately:YES];
+        deliverImmediately:YES];
 }

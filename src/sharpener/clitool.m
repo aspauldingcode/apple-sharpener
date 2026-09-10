@@ -1,6 +1,14 @@
+/**
+ * Apple Sharpener: Command Line Interface
+ *
+ * Provides a terminal-based interface for controlling sharpening settings,
+ * broadcasting notifications, and viewing current status.
+ */
+
 #import <Foundation/Foundation.h>
 #import <notify.h>
 #import "sharpener_cf_prefs.h"
+#import "kdl_patch.h"
 
 // Embed version at compile time; defaults to "dev" when not provided
 #ifndef APPLE_SHARPENER_VERSION
@@ -8,17 +16,20 @@
 #endif
 
 static void sharpener_cli_commit(void) {
+  // Authoritative settings reside in the shared suite
   NSUserDefaults *suite =
       [[NSUserDefaults alloc] initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
+  // Mirror to CF domain so all processes can see the change immediately
   SharpenerMirrorSuiteDefaultsToCF(suite);
+  // Broadcast update notification to all listeners (Dock, Apps)
   SharpenerPostModulesUpdateNotification();
 }
 
 void printUsage() {
   puts("Usage: sharpener [command] [options]\n"
        "\nGlobal Commands:"
-       "\n  on, off, toggle              Control sharpening (both windows and "
-       "dock)"
+       "\n  on, off, toggle              Control sharpening (windows and dock; "
+       "`off` / disable toggle also turns squircle off)"
        "\n  -r, --radius <value>         Set global radius (affects windows "
        "and dock)"
        "\n\nWindows Commands:"
@@ -173,6 +184,7 @@ int main(int argc, const char *argv[]) {
         }
         [defaults setInteger:radius forKey:@"windows_radius"];
         [defaults synchronize];
+        kdl_set_int(@"windows", @"radius", (NSInteger)radius);
         printf("Windows radius set to %llu\n", radius);
         sharpener_cli_commit();
         return 0;
@@ -187,6 +199,7 @@ int main(int argc, const char *argv[]) {
         }
         [defaults setInteger:radius forKey:@"dock_radius"];
         [defaults synchronize];
+        kdl_set_int(@"dock", @"radius", (NSInteger)radius);
         printf("Dock radius set to %llu\n", radius);
         sharpener_cli_commit();
         return 0;
@@ -204,6 +217,7 @@ int main(int argc, const char *argv[]) {
         exponent = 6.0; // Cap at maximum
       [defaults setDouble:exponent forKey:@"squircle_exponent"];
       [defaults synchronize];
+      kdl_set_double(@"global", @"squircle_exponent", exponent);
 
       int tokenEnabled = 0;
       if (notify_register_check(
@@ -250,6 +264,7 @@ int main(int argc, const char *argv[]) {
         }
         [defaults setBool:YES forKey:@"windows_enabled"];
         [defaults synchronize];
+        kdl_set_bool(@"windows", @"enabled", YES);
         printf("Windows sharpener enabled\n");
       } else if (isDockOnly) {
         // Dock only
@@ -262,6 +277,7 @@ int main(int argc, const char *argv[]) {
         }
         [defaults setBool:YES forKey:@"dock_enabled"];
         [defaults synchronize];
+        kdl_set_bool(@"dock", @"enabled", YES);
         printf("Dock sharpener enabled\n");
       } else if (isSquircleOnly) {
         // Squircle only
@@ -285,6 +301,7 @@ int main(int argc, const char *argv[]) {
 
         [defaults setBool:YES forKey:@"squircle_enabled"];
         [defaults synchronize];
+        kdl_set_bool(@"global", @"squircle", YES);
         printf("Squircle continuous corners enabled\n");
       } else {
         // Both (global)
@@ -311,9 +328,8 @@ int main(int argc, const char *argv[]) {
           notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
         }
         [defaults setBool:YES forKey:@"enabled"];
-        [defaults setBool:YES forKey:@"windows_enabled"];
-        [defaults setBool:YES forKey:@"dock_enabled"];
         [defaults synchronize];
+        kdl_set_bool(@"sharpener", @"enabled", YES);
         printf("Sharpener enabled (windows and dock)\n");
       }
       sharpener_cli_commit();
@@ -332,6 +348,7 @@ int main(int argc, const char *argv[]) {
         }
         [defaults setBool:NO forKey:@"windows_enabled"];
         [defaults synchronize];
+        kdl_set_bool(@"windows", @"enabled", NO);
         printf("Windows sharpener disabled\n");
       } else if (isDockOnly) {
         // Dock only
@@ -344,6 +361,7 @@ int main(int argc, const char *argv[]) {
         }
         [defaults setBool:NO forKey:@"dock_enabled"];
         [defaults synchronize];
+        kdl_set_bool(@"dock", @"enabled", NO);
         printf("Dock sharpener disabled\n");
       } else if (isSquircleOnly) {
         // Squircle only
@@ -367,6 +385,7 @@ int main(int argc, const char *argv[]) {
 
         [defaults setBool:NO forKey:@"squircle_enabled"];
         [defaults synchronize];
+        kdl_set_bool(@"global", @"squircle", NO);
         printf("Squircle continuous corners disabled\n");
       } else {
         // Both (global)
@@ -393,10 +412,9 @@ int main(int argc, const char *argv[]) {
           notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
         }
         [defaults setBool:NO forKey:@"enabled"];
-        [defaults setBool:NO forKey:@"windows_enabled"];
-        [defaults setBool:NO forKey:@"dock_enabled"];
         [defaults synchronize];
-        printf("Sharpener disabled (windows and dock)\n");
+        kdl_set_bool(@"sharpener", @"enabled", NO);
+        printf("Sharpener disabled (windows, dock, and squircle)\n");
       }
       sharpener_cli_commit();
     } else if ([command isEqualToString:@"toggle"]) {
@@ -494,11 +512,12 @@ int main(int argc, const char *argv[]) {
           notify_post("com.aspauldingcode.apple_sharpener.dock.enabled");
         }
         [defaults setBool:newEnabled forKey:@"enabled"];
-        [defaults setBool:newEnabled forKey:@"windows_enabled"];
-        [defaults setBool:newEnabled forKey:@"dock_enabled"];
         [defaults synchronize];
-        printf("Sharpener %s (windows and dock)\n",
-               newEnabled ? "enabled" : "disabled");
+        if (newEnabled) {
+          printf("Sharpener enabled (windows and dock)\n");
+        } else {
+          printf("Sharpener disabled (windows, dock, and squircle)\n");
+        }
       }
       sharpener_cli_commit();
       return 0;
@@ -551,6 +570,9 @@ int main(int argc, const char *argv[]) {
       [defaults setInteger:radius forKey:@"windows_radius"];
       [defaults setInteger:dockRadius forKey:@"dock_radius"];
       [defaults synchronize];
+      kdl_set_int(@"global", @"radius", (NSInteger)radius);
+      kdl_set_int(@"windows", @"radius", (NSInteger)radius);
+      kdl_set_int(@"dock", @"radius", (NSInteger)dockRadius);
       if (radius > 46) {
         printf("Global radius set to %llu (windows: %llu, dock: %llu - capped "
                "at maximum)\n",
@@ -588,6 +610,7 @@ int main(int argc, const char *argv[]) {
             initWithSuiteName:@"com.aspauldingcode.apple_sharpener"];
         [defaults setInteger:radius forKey:@"dock_radius"];
         [defaults synchronize];
+        kdl_set_int(@"dock", @"radius", (NSInteger)radius);
         printf("Dock radius set to %llu\n", radius);
         sharpener_cli_commit();
       } else {

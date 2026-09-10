@@ -1,3 +1,11 @@
+/**
+ * Apple Sharpener: File Logging Implementation
+ *
+ * Provides a thread-safe, non-blocking logging mechanism that writes
+ * directly to a persistent log file. Avoids using system logs (NSLog/os_log)
+ * to prevent cluttering the user's console during global injection.
+ */
+
 #import "sharpener_log.h"
 #import <stdarg.h>
 
@@ -10,6 +18,7 @@ static NSString *SharpenerLogFilePath(void) {
     NSString *home = NSHomeDirectory();
     NSString *dir =
         [home stringByAppendingPathComponent:@"Library/Logs/AppleSharpener"];
+    // Ensure the log directory exists
     [[NSFileManager defaultManager]
         createDirectoryAtPath:dir
         withIntermediateDirectories:YES
@@ -24,6 +33,7 @@ static dispatch_queue_t SharpenerLogQueue(void) {
   static dispatch_queue_t q;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
+    // Serial queue to ensure log entries are written in order and without contention
     q = dispatch_queue_create("com.aspauldingcode.apple_sharpener.filelog",
                               DISPATCH_QUEUE_SERIAL);
   });

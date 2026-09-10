@@ -73,10 +73,10 @@ To disable SIP, you'll need to:
 
 ## Configuration & Usage
 
-Apple Sharpener can be completely configured via the CLI, graphically using the included **Liquid Glass Configurator App**, or directly via a `KDL` configuration file.
+Apple Sharpener can be completely configured via the CLI, graphically via the **`sharpener-configurator`** menubar agent (`/usr/local/bin`), or directly via a `KDL` configuration file.
 
 See the comprehensive **[Documentation Guide](./DOCUMENTATION.md)** for details on:
-- 🎨 Using the Liquid Glass GUI Configurator
+- 🎨 Using the Liquid Glass menubar configurator (`sharpener-configurator`)
 - ⚙️ Declarative `KDL` format configuration (`~/.config/sharpener/config.kdl`)
 - 💻 Command Line Interface (CLI) options
 - 🛠 Installation and uninstallation instructions
