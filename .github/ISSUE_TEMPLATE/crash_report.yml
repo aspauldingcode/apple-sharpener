@@ -1,0 +1,74 @@
+name: Crash Report
+description: Crash or hang involving Apple Sharpener / libmipc (auto-filled from the menubar agent when possible)
+title: "[Crash] "
+labels: ["crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The **sharpener-agent** menubar applet can open this form with OS / version / log prefilled via **Submit Bug Report** on the crash notification.
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: e.g. 15.2 (24C101) / Darwin
+      placeholder: "15.x (build)"
+    validations:
+      required: true
+
+  - type: input
+    id: sharpener_version
+    attributes:
+      label: Apple Sharpener version
+      description: From `sharpener --version` (e.g. 0.0.4 — macOS GoldenGate)
+      placeholder: "0.0.4 (macOS GoldenGate)"
+    validations:
+      required: true
+
+  - type: input
+    id: libmipc_version
+    attributes:
+      label: libmipc version
+      description: Bundled / linked libmipc (or "unknown" / Salty fork tip)
+      placeholder: "saltyfork / unknown"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Likely component
+      options:
+        - apple-sharpener (dylib / windows / dock)
+        - libmipc / IPC
+        - sharpener-agent (menubar)
+        - unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: Short summary (app that crashed, what you were doing)
+      placeholder: TextEdit crashed when changing window radius…
+    validations:
+      required: true
+
+  - type: textarea
+    id: crash_log
+    attributes:
+      label: Crash log
+      description: Paste the DiagnosticReports excerpt or clipboard dump from the notification
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: extras
+    attributes:
+      label: Extra context
+      description: config.kdl snippets, reproduction steps, screenshots
+    validations:
+      required: false
